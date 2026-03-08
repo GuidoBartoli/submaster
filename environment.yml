@@ -6,6 +6,7 @@ dependencies:
   - python=3.12
   - pip
   - ffmpeg
+  - whisper.cpp
   - git
   - cmake
   - ninja

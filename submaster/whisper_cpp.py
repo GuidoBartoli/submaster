@@ -25,6 +25,18 @@ class WhisperCppRunner:
         if env_candidate:
             candidates.append(Path(env_candidate))
 
+        conda_prefix = os.environ.get("CONDA_PREFIX")
+        if conda_prefix:
+            prefix_path = Path(conda_prefix)
+            candidates.extend(
+                [
+                    prefix_path / "bin" / "whisper-cli",
+                    prefix_path / "bin" / "main",
+                    prefix_path / "Scripts" / "whisper-cli.exe",
+                    prefix_path / "Scripts" / "main.exe",
+                ]
+            )
+
         for command_name in ("whisper-cli", "main"):
             resolved = shutil.which(command_name)
             if resolved:
@@ -51,6 +63,8 @@ class WhisperCppRunner:
         raise SubmasterError(
             "Unable to find a whisper.cpp executable.\n"
             "Install or build whisper.cpp, then put 'whisper-cli' on PATH or pass --whisper-cli.\n"
+            "If you are using Conda, install 'conda-forge::whisper.cpp'.\n"
+            "Note: the PyPI package named 'whisper-cli' is not the whisper.cpp binary used by this app.\n"
             f"Searched:\n{searched}"
         )
 

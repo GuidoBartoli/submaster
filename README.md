@@ -51,6 +51,7 @@ This environment installs:
 - Python 3.12
 - `ffmpeg` from `conda-forge`
 - `ffprobe` as part of the `ffmpeg` package
+- `whisper.cpp` from `conda-forge`
 - `git`, `cmake`, `ninja`, `c-compiler`, and `cxx-compiler` so you can build `whisper.cpp`
 - the current project in editable mode via `pip -e .`
 
@@ -60,18 +61,44 @@ Verify the main tools after activation:
 python --version
 ffmpeg -version
 ffprobe -version
+whisper-cli -h
 submaster --help
 ```
 
-If `ffmpeg` or `ffprobe` is still missing for any reason, reinstall it inside the environment:
+If `ffmpeg`, `ffprobe`, or `whisper-cli` is still missing for any reason, reinstall them inside the environment:
 
 ```bash
 conda install -n submaster -c conda-forge ffmpeg
+conda install -n submaster -c conda-forge whisper.cpp
 ```
 
 ## Install `whisper.cpp`
 
-`submaster` calls a local `whisper.cpp` executable. The Conda environment gives you the build tools, but you still need to fetch and build `whisper.cpp` itself.
+`submaster` calls a local `whisper.cpp` executable. In the normal Conda setup above, `whisper.cpp` should already be installed and `whisper-cli` should be available immediately.
+
+Do not use:
+
+```bash
+pip install whisper-cli
+```
+
+That PyPI package is unrelated to the native `whisper.cpp` executable expected by this project.
+
+### Preferred Conda install
+
+If your environment was created before `whisper.cpp` was added to [environment.yml](/home/guido/Projects/submaster/environment.yml), install it explicitly:
+
+```bash
+conda install -n submaster -c conda-forge whisper.cpp
+```
+
+Then confirm:
+
+```bash
+whisper-cli -h
+```
+
+### Build from source instead
 
 ### CPU build
 
