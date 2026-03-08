@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "submaster"
+version = "0.1.0"
+description = "Offline subtitle generation from audio or video using whisper.cpp"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Guido" }
+]
+keywords = ["subtitles", "whisper", "whisper.cpp", "ffmpeg", "srt"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Environment :: Console",
+  "Topic :: Multimedia :: Video",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+[project.scripts]
+submaster = "submaster.cli:main"
+
+[tool.setuptools]
+packages = ["submaster"]
