@@ -132,6 +132,24 @@ cmake --build whisper.cpp/build -j --config Release
 
 For some newer NVIDIA GPUs, `whisper.cpp` also documents explicitly setting `CMAKE_CUDA_ARCHITECTURES`.
 
+## GPU Troubleshooting
+
+If `submaster` says GPU mode was requested but the machine still runs at high CPU usage, check the backend that your `whisper-cli` binary was built with:
+
+```bash
+ldd "$(which whisper-cli)" | grep ggml
+```
+
+If you only see `libggml-cpu` and do not see `libggml-cuda`, your current `whisper.cpp` binary is CPU-only. In that case, installing Python packages will not enable GPU acceleration. You need a CUDA-enabled `whisper.cpp` build instead.
+
+You can also confirm it directly:
+
+```bash
+whisper-cli -m ./models/ggml-base.bin -f sample.wav -pp -np
+```
+
+If startup logs contain `whisper_backend_init_gpu: no GPU found`, the current executable is not using your NVIDIA GPU.
+
 ### If build tools are missing outside Conda
 
 If you choose not to use the Conda environment, install the missing tools manually.
