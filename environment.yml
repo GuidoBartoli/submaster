@@ -1,0 +1,16 @@
+name: submaster
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.12
+  - pip
+  - ffmpeg
+  - whisper.cpp
+  - git
+  - cmake
+  - ninja
+  - c-compiler
+  - cxx-compiler
+  - pip:
+      - -e .
