@@ -18,8 +18,47 @@ YELLOW = "\033[38;5;220m"
 RED = "\033[38;5;196m"
 
 
+def _enable_windows_virtual_terminal() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        enable_vt = 0x0004
+        enabled = False
+        for handle_id in (-11, -12):
+            handle = kernel32.GetStdHandle(handle_id)
+            if handle in (0, -1):
+                continue
+            mode = ctypes.c_uint()
+            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)) == 0:
+                continue
+            if kernel32.SetConsoleMode(handle, mode.value | enable_vt) == 0:
+                continue
+            enabled = True
+        if enabled:
+            return True
+        return bool(
+            os.environ.get("ANSICON")
+            or os.environ.get("WT_SESSION")
+            or os.environ.get("TERM_PROGRAM")
+        )
+    except Exception:
+        return bool(
+            os.environ.get("ANSICON")
+            or os.environ.get("WT_SESSION")
+            or os.environ.get("TERM_PROGRAM")
+        )
+
+
 def _supports_color() -> bool:
-    return sys.stderr.isatty() and sys.stdout.isatty() and "TERM" in os.environ
+    if not (sys.stderr.isatty() and sys.stdout.isatty()):
+        return False
+    if os.name == "nt":
+        return _enable_windows_virtual_terminal()
+    term = os.environ.get("TERM", "")
+    return bool(term and term.lower() != "dumb")
 
 
 def _style(enabled: bool, color: str, text: str) -> str:

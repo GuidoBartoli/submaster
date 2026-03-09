@@ -26,31 +26,99 @@ class WhisperCppRunner:
     def _project_root(self) -> Path:
         return Path(__file__).resolve().parent.parent
 
+    def _windows_pathexts(self) -> tuple[str, ...]:
+        raw_value = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        return tuple(
+            ext.lower()
+            for ext in raw_value.split(";")
+            if ext.strip()
+        )
+
+    def _is_executable_file(self, candidate: Path) -> bool:
+        if not candidate.is_file():
+            return False
+        if platform.system() == "Windows":
+            return candidate.suffix.lower() in self._windows_pathexts()
+        return os.access(candidate, os.X_OK)
+
+    def _expand_explicit_candidate(self, candidate: Path) -> list[Path]:
+        expanded = [candidate.expanduser()]
+        if platform.system() != "Windows" or candidate.suffix:
+            return expanded
+
+        for suffix in self._windows_pathexts():
+            expanded.append(candidate.with_suffix(suffix))
+        return expanded
+
+    def _path_command_names(self) -> tuple[str, ...]:
+        return ("whisper-cli", "main")
+
+    def _local_command_names(self) -> tuple[str, ...]:
+        base_names = self._path_command_names()
+        if platform.system() != "Windows":
+            return base_names
+        exe_names = tuple(f"{name}.exe" for name in base_names)
+        return exe_names + base_names
+
+    def _common_build_directories(self, root: Path) -> list[Path]:
+        directories = [
+            root / "whisper.cpp" / "build" / "bin",
+            root / "whisper.cpp" / "build" / "src",
+            root / "whisper.cpp" / "build",
+            root / "build" / "bin",
+            root / "build" / "src",
+            root / "build",
+            root,
+        ]
+        config_names = ("Release", "RelWithDebInfo", "Debug")
+        expanded: list[Path] = []
+        seen: set[Path] = set()
+        for directory in directories:
+            for candidate in (directory, *(directory / config for config in config_names)):
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                expanded.append(candidate)
+        return expanded
+
+    def _candidate_paths(self, directories: list[Path], names: tuple[str, ...]) -> list[Path]:
+        return [directory / name for directory in directories for name in names]
+
+    def _bundled_candidate_paths(self, project_root: Path) -> list[Path]:
+        if platform.system() == "Linux":
+            names = ("whisper-cli-gpu", "whisper-cli-cpu", "whisper-cli")
+        elif platform.system() == "Windows":
+            names = ("whisper-cli-gpu.exe", "whisper-cli-cpu.exe", "whisper-cli.exe")
+        else:
+            names = ()
+        return [project_root / "whisper" / name for name in names]
+
     def _resolve_cli_path(self, cli_path: Path | None) -> Path:
         explicit_candidates: list[Path] = []
         discovered_candidates: list[Path] = []
-        bundled_candidates: list[Path] = []
 
         if cli_path:
-            explicit_candidates.append(cli_path)
+            explicit_candidates.extend(self._expand_explicit_candidate(cli_path))
 
         env_candidate = os.environ.get("WHISPER_CPP_CLI")
         if env_candidate:
-            explicit_candidates.append(Path(env_candidate))
+            explicit_candidates.extend(self._expand_explicit_candidate(Path(env_candidate)))
 
         conda_prefix = os.environ.get("CONDA_PREFIX")
         if conda_prefix:
             prefix_path = Path(conda_prefix)
+            discovered_candidates.extend(self._candidate_paths([prefix_path / "bin"], self._local_command_names()))
             discovered_candidates.extend(
-                [
-                    prefix_path / "bin" / "whisper-cli",
-                    prefix_path / "bin" / "main",
-                    prefix_path / "Scripts" / "whisper-cli.exe",
-                    prefix_path / "Scripts" / "main.exe",
-                ]
+                self._candidate_paths(
+                    [
+                        prefix_path / "Scripts",
+                        prefix_path / "Library" / "bin",
+                    ],
+                    self._local_command_names(),
+                )
             )
 
-        for command_name in ("whisper-cli", "main"):
+        for command_name in self._path_command_names():
             resolved = shutil.which(command_name)
             if resolved:
                 discovered_candidates.append(Path(resolved))
@@ -60,28 +128,14 @@ class WhisperCppRunner:
 
         # Check the common local build layouts before falling back to the bundled binary.
         discovered_candidates.extend(
-            [
-                cwd / "whisper.cpp" / "build" / "bin" / "whisper-cli",
-                cwd / "whisper.cpp" / "build" / "bin" / "main",
-                cwd / "whisper-cli",
-                cwd / "main",
-                cwd / "build" / "bin" / "whisper-cli",
-                cwd / "build" / "bin" / "main",
-            ]
+            self._candidate_paths(self._common_build_directories(cwd), self._local_command_names())
         )
-
-        bundled_candidates.extend(
-            [
-                project_root / "whisper" / "whisper-cli-gpu",
-                project_root / "whisper" / "whisper-cli-cpu",
-                project_root / "whisper" / "whisper-cli",
-            ]
-        )
+        bundled_candidates = self._bundled_candidate_paths(project_root)
 
         searched = explicit_candidates + discovered_candidates + bundled_candidates
 
         for candidate in self._existing_candidates(explicit_candidates):
-            if candidate and candidate.is_file() and os.access(candidate, os.X_OK):
+            if candidate and self._is_executable_file(candidate):
                 return candidate.resolve()
 
         ranked_discovered = self._rank_candidates_by_gpu(discovered_candidates)
@@ -93,9 +147,13 @@ class WhisperCppRunner:
             return ranked_bundled[0].resolve()
 
         searched_text = "\n".join(f"  - {item}" for item in searched if item)
+        if platform.system() == "Linux":
+            bundled_hint = "or use the bundled fallback at './whisper/whisper-cli'."
+        else:
+            bundled_hint = "A repo-local bundled fallback is only shipped for Linux x86_64."
         raise SubmasterError(
             "Unable to find a whisper.cpp executable.\n"
-            "Install or build whisper.cpp, put 'whisper-cli' on PATH, or use the bundled fallback at './whisper/whisper-cli'.\n"
+            f"Install or build whisper.cpp, put 'whisper-cli' on PATH, or place an executable path in --whisper-cli / WHISPER_CPP_CLI. {bundled_hint}\n"
             "If you are using Conda, install 'conda-forge::whisper.cpp'.\n"
             "Note: the PyPI package named 'whisper-cli' is not the whisper.cpp binary used by this app.\n"
             f"Searched:\n{searched_text}"
@@ -111,7 +169,7 @@ class WhisperCppRunner:
             if candidate in seen:
                 continue
             seen.add(candidate)
-            if candidate.is_file() and os.access(candidate, os.X_OK):
+            if self._is_executable_file(candidate):
                 existing.append(candidate)
         return existing
 
@@ -157,8 +215,12 @@ class WhisperCppRunner:
 
         root_candidates = {
             cli_path.parent,
+            cli_path.parent / "lib",
             cli_path.parent.parent,
             cli_path.parent.parent / "lib",
+            cli_path.parent.parent / "Library" / "bin",
+            cli_path.parent.parent / "Library" / "lib",
+            cli_path.parent.parent / "DLLs",
             cli_path.parent.parent / "src",
             cli_path.parent.parent / "bin",
         }
@@ -284,6 +346,8 @@ class WhisperCppRunner:
             return "gpu"
         if not self.gpu_backends:
             return "cpu"
+        if "cuda" not in self.gpu_backends:
+            return "gpu"
         nvidia_smi = shutil.which("nvidia-smi")
         if nvidia_smi:
             probe = subprocess.run(
@@ -294,7 +358,7 @@ class WhisperCppRunner:
             )
             if probe.returncode == 0 and probe.stdout.strip():
                 return "gpu"
-        return "cpu"
+        return "gpu"
 
     def run(
         self,

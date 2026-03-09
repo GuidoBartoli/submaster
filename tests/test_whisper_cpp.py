@@ -52,6 +52,53 @@ class WhisperCppRunnerTests(unittest.TestCase):
 
             self.assertEqual(resolved, bundled_cli.resolve())
 
+    def test_resolve_finds_windows_release_build_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            local_cli = root / "whisper.cpp" / "build" / "bin" / "Release" / "whisper-cli.exe"
+
+            self._make_executable(local_cli)
+
+            runner = WhisperCppRunner.__new__(WhisperCppRunner)
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("submaster.whisper_cpp.platform.system", return_value="Windows"):
+                    with patch("submaster.whisper_cpp.shutil.which", return_value=None):
+                        with patch("submaster.whisper_cpp.Path.cwd", return_value=root):
+                            with patch.object(WhisperCppRunner, "_project_root", return_value=root / "repo"):
+                                resolved = runner._resolve_cli_path(None)
+
+            self.assertEqual(resolved, local_cli.resolve())
+
+    def test_resolve_skips_linux_bundled_fallback_on_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            bundled_cli = root / "repo" / "whisper" / "whisper-cli"
+
+            self._make_executable(bundled_cli)
+
+            runner = WhisperCppRunner.__new__(WhisperCppRunner)
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("submaster.whisper_cpp.platform.system", return_value="Windows"):
+                    with patch("submaster.whisper_cpp.shutil.which", return_value=None):
+                        with patch.object(WhisperCppRunner, "_project_root", return_value=root / "repo"):
+                            with self.assertRaises(SubmasterError) as ctx:
+                                runner._resolve_cli_path(None)
+
+        self.assertIn("only shipped for Linux x86_64", str(ctx.exception))
+
+    def test_detect_gpu_backends_finds_windows_conda_dlls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli_path = root / "conda" / "Scripts" / "whisper-cli.exe"
+            self._make_executable(cli_path)
+            dll_path = root / "conda" / "Library" / "bin" / "ggml-cuda.dll"
+            dll_path.parent.mkdir(parents=True, exist_ok=True)
+            dll_path.write_text("", encoding="utf-8")
+
+            runner = WhisperCppRunner.__new__(WhisperCppRunner)
+
+            self.assertEqual(runner._detect_gpu_backends_for(cli_path), {"cuda"})
+
     def test_verify_gpu_runtime_linkage_accepts_cuda_linked_binary(self) -> None:
         runner = WhisperCppRunner.__new__(WhisperCppRunner)
         runner.cli_path = Path("/tmp/whisper-cli")
@@ -85,6 +132,13 @@ class WhisperCppRunnerTests(unittest.TestCase):
 
         self.assertIn("CPU-only ggml libraries", str(ctx.exception))
         self.assertIn("libggml-cpu.so.0", str(ctx.exception))
+
+    def test_resolve_device_auto_prefers_any_detected_gpu_backend(self) -> None:
+        runner = WhisperCppRunner.__new__(WhisperCppRunner)
+        runner.gpu_backends = {"vulkan"}
+
+        with patch("submaster.whisper_cpp.platform.system", return_value="Linux"):
+            self.assertEqual(runner.resolve_device("auto"), "gpu")
 
     def test_extract_timing_lines_keeps_whisper_cpp_timings(self) -> None:
         runner = WhisperCppRunner.__new__(WhisperCppRunner)

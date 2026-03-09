@@ -88,12 +88,19 @@ def resolve_output_path(source_path: Path, requested_output: str | None) -> Path
         return source_path.with_suffix(".srt")
 
     output_path = Path(requested_output).expanduser()
+    trailing_separators = {sep for sep in (os.sep, os.altsep, "/", "\\") if sep}
+    has_trailing_separator = any(requested_output.endswith(sep) for sep in trailing_separators)
+    directory_output_path = output_path
+    if has_trailing_separator and not output_path.exists():
+        trimmed_output = requested_output.rstrip("/\\")
+        if trimmed_output:
+            directory_output_path = Path(trimmed_output).expanduser()
     if output_path.exists() and output_path.is_dir():
         return output_path / f"{source_path.stem}.srt"
     if output_path.suffix.lower() != ".srt":
         return (
-            output_path / f"{source_path.stem}.srt"
-            if requested_output.endswith(os.sep)
+            directory_output_path / f"{source_path.stem}.srt"
+            if has_trailing_separator
             else output_path.with_suffix(".srt")
         )
     return output_path
