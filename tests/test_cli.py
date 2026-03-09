@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from submaster.cli import build_parser, main
+from submaster.cli import build_parser, main, resolve_output_path
 
 
 class CliTests(unittest.TestCase):
@@ -30,6 +30,13 @@ class CliTests(unittest.TestCase):
                     exit_code = main([str(input_path)])
 
         self.assertEqual(exit_code, 1)
+
+    def test_resolve_output_path_accepts_windows_style_directory_separator(self) -> None:
+        source_path = Path("/tmp/input.mp4")
+
+        resolved = resolve_output_path(source_path, "subs\\")
+
+        self.assertEqual(resolved, Path("subs") / "input.srt")
 
 
 if __name__ == "__main__":

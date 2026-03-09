@@ -1,21 +1,28 @@
 # Bundled `whisper-cli`
 
-This folder contains the repo-local `whisper.cpp` fallback used only when no external `whisper-cli` executable is found.
+This folder documents the repo-local `whisper.cpp` fallback that `submaster` may use when no external executable is found.
 
 - Upstream project: `ggml-org/whisper.cpp`
 - Upstream release: `v1.8.3`
 - Upstream commit: `2eeeba56e9edd762b4b38467bab96c2517163158`
+- Bundled artifact: `whisper-cli`
 - Target platform: Linux `x86_64`
 - Build type: CPU-only fallback
 - Build command: `cmake -S . -B build-static -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF`
 
 The bundled executable was built on March 9, 2026 from the official upstream source tree.
 
-Runtime notes:
+## Platform Notes
 
-- This is a CPU fallback, not a CUDA build.
+- This bundled fallback is Linux-only.
+- macOS and Windows users must install or build `whisper.cpp` separately.
+- `submaster` will not select this Linux binary on macOS or Windows.
+- If a GPU-capable `whisper-cli` is available in Conda, on `PATH`, or in a common local build folder, `submaster` will prefer that external executable instead.
+
+## Runtime Notes
+
+- This is a CPU fallback, not a CUDA, Metal, Vulkan, or OpenCL build.
 - It still depends on standard host libraries such as `glibc`, `libstdc++`, and `libgomp`.
-- If a GPU-capable `whisper-cli` is installed in Conda, on `PATH`, or in a common local build folder, `submaster` will prefer that external executable instead.
 
 Upstream `whisper.cpp` is distributed under the MIT license:
 

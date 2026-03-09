@@ -1,62 +1,61 @@
-```                                                               
-  mmmm         #      m    m                 m                 
- #"   " m   m  #mmm   ##  ##  mmm    mmm   mm#mm   mmm    m mm 
- "#mmm  #   #  #" "#  # ## # "   #  #   "    #    #"  #   #"  "
-     "# #   #  #   #  # "" # m"""#   """m    #    #""""   #    
- "mmm#" "mm"#  ##m#"  #    # "mm"#  "mmm"    "mm  "#mm"   #    
-```
+<p align="center">
+  <img src="submaster.png" width="600px" alt="Submaster" />
+  <br><b>An open source video transcription utility</b>
+</p>
 
-A command-line Python application that automatically transcribe spoken dialogues into a synchronized `.srt` subtitle file to be used during playback.
+`submaster` is a command-line Python application that transcribes spoken dialogues from a video file into a synchronized `.srt` subtitle file using `ffmpeg` and `whisper.cpp` backend.
 
 ## Features
 
-- Accepts video input in various formats, including MP4, MKV, MOV, AVI, and more using `ffmpeg` as a backend
-- Automatically extracts the audio track before transcription
-- Supports `tiny`, `base`, `small`, `medium`, `large` and `turbo` Whisper models via `whisper.cpp` (downloads missing files on demand)
-- Prefers GPU in `--device auto` when a local GPU is detectable
-- Produces compliant `.srt` output with normalized cue numbering and timestamps
-- Shows colored terminal output and progress bars
+- Accepts common video formats such as MP4, MKV, MOV, AVI, and RMVB
+- Extracts and normalizes mono WAV audio automatically before transcription
+- Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
+- Downloads missing GGML model files on demand
+- Works on Linux, macOS, and Windows when `ffmpeg` and `whisper.cpp` are available
+- Prefers GPU execution in `--device auto` when the selected `whisper.cpp` build appears GPU-capable
+- Produces normalized `.srt` output with clean cue numbering and timestamps
+
+## Platform Support
+
+| Platform | Status | Notes |
+| --- | --- | --- |
+| Linux | Supported | Includes a bundled Linux `x86_64` CPU fallback at [`whisper/whisper-cli`](whisper/whisper-cli) |
+| macOS | Supported | Requires an installed or locally built `whisper.cpp` executable |
+| Windows | Supported | Requires an installed or locally built `whisper.cpp` executable; common `.exe` build outputs are auto-detected |
+
+The bundled fallback is Linux-only. On macOS and Windows, install `whisper.cpp` with Conda or build it locally and point `submaster` at it with `--whisper-cli` if needed.
 
 ## Project Layout
 
 ```text
 main.py                  Program entry point
 submaster/               CLI package
-whisper/                 Bundled Linux x86_64 CPU fallback for whisper.cpp
-models/                  Auto-downloaded whisper.cpp model files
-tests/                   Small unit test suite for SRT normalization
+whisper/                 Repo-local whisper.cpp fallback metadata and Linux binary
+models/                  Auto-downloaded GGML model files
+tests/                   Unit tests
 ```
 
 ## Requirements
 
-- Python 3.10+ for package compatibility
+- Python 3.10+
 - `ffmpeg`
 - `ffprobe`
 - a working `whisper.cpp` executable (`whisper-cli` recommended)
 
-`submaster` itself has no third-party Python runtime dependencies. The package metadata in [pyproject.toml](/home/guido/Projects/submaster/pyproject.toml) requires Python `>=3.10`, while the provided Conda environment is pinned to Python 3.12 as the tested default setup.
+`submaster` has no third-party Python runtime dependencies. The package metadata in [`pyproject.toml`](pyproject.toml) allows Python `>=3.10`. The provided Conda environment in [`environment.yml`](environment.yml) uses Python 3.12 as the default tested setup.
 
-If no external `whisper-cli` is available, `submaster` falls back to the bundled Linux x86_64 CPU binary in [whisper/whisper-cli](/home/guido/Projects/submaster/whisper/whisper-cli).
+## Quick Start With Conda
 
-## Conda Setup
-
-Create the environment from [environment.yml](/home/guido/Projects/submaster/environment.yml):
+The simplest cross-platform setup is the provided Conda environment:
 
 ```bash
 conda env create -f environment.yml
 conda activate submaster
 ```
 
-This environment installs:
+It installs Python 3.12, `ffmpeg`, `ffprobe`, `whisper.cpp`, build tools, and the current project in editable mode.
 
-- Python 3.12
-- `ffmpeg` from `conda-forge`
-- `ffprobe` as part of the `ffmpeg` package
-- `whisper.cpp` from `conda-forge`
-- `git`, `cmake`, `ninja`, `c-compiler`, and `cxx-compiler` so you can build `whisper.cpp`
-- the current project in editable mode via `pip -e .`
-
-Verify the main tools after activation:
+Verify the toolchain:
 
 ```bash
 python --version
@@ -66,23 +65,25 @@ whisper-cli -h
 submaster --help
 ```
 
-If `ffmpeg`, `ffprobe`, or `whisper-cli` is still missing for any reason, reinstall them inside the environment:
+If `ffmpeg`, `ffprobe`, or `whisper-cli` is still missing:
 
 ```bash
 conda install -n submaster -c conda-forge ffmpeg
 conda install -n submaster -c conda-forge whisper.cpp
 ```
 
-## Install `whisper.cpp`
+## How `whisper.cpp` Is Located
 
-`submaster` calls a local `whisper.cpp` executable. In the normal Conda setup above, `whisper.cpp` should already be installed and `whisper-cli` should be available immediately.
+Lookup order:
 
-Executable lookup order is:
+- `--whisper-cli`
+- `WHISPER_CPP_CLI`
+- Conda, `PATH`, and common local build outputs
+- bundled repo fallback on Linux `x86_64` only
 
-1. `--whisper-cli`
-2. `WHISPER_CPP_CLI`
-3. Conda / `PATH` / common local build outputs, preferring a GPU-capable build when one is detected
-4. bundled repo fallback at [whisper/whisper-cli](/home/guido/Projects/submaster/whisper/whisper-cli)
+Common local build outputs include:
+- Linux and macOS: `./whisper.cpp/build/bin/whisper-cli`, `./build/bin/whisper-cli`
+- Windows: `.\whisper.cpp\build\bin\Release\whisper-cli.exe`, `.\build\bin\Release\whisper-cli.exe`, plus non-`Release` `.exe` variants
 
 Do not use:
 
@@ -92,23 +93,17 @@ pip install whisper-cli
 
 That PyPI package is unrelated to the native `whisper.cpp` executable expected by this project.
 
-### Preferred Conda install
+## Installing Or Building `whisper.cpp`
 
-If your environment was created before `whisper.cpp` was added to [environment.yml](/home/guido/Projects/submaster/environment.yml), install it explicitly:
+If your environment was created before `whisper.cpp` was added to [`environment.yml`](environment.yml), install it explicitly:
 
 ```bash
 conda install -n submaster -c conda-forge whisper.cpp
 ```
 
-Then confirm:
+### Build From Source
 
-```bash
-whisper-cli -h
-```
-
-### Build from source instead
-
-### CPU build
+If you are not using Conda, build `whisper.cpp` locally from the upstream source tree:
 
 ```bash
 git clone https://github.com/ggml-org/whisper.cpp.git
@@ -116,21 +111,31 @@ cmake -S whisper.cpp -B whisper.cpp/build -G Ninja
 cmake --build whisper.cpp/build -j --config Release
 ```
 
-The resulting executable is usually:
-
-```bash
-./whisper.cpp/build/bin/whisper-cli
-```
-
-You can either add that directory to `PATH` or pass it explicitly:
+Typical outputs are `./whisper.cpp/build/bin/whisper-cli` on Linux/macOS and `.\whisper.cpp\build\bin\Release\whisper-cli.exe` on Windows. Add that directory to `PATH` or pass it explicitly:
 
 ```bash
 submaster input.mp4 --whisper-cli ./whisper.cpp/build/bin/whisper-cli
 ```
 
-### NVIDIA GPU build
+Windows PowerShell equivalent:
 
-If you want GPU execution on NVIDIA hardware, `whisper.cpp`'s official build instructions require the CUDA toolkit to be installed on the system first. Then build with CUDA enabled:
+```powershell
+submaster input.mp4 --whisper-cli .\whisper.cpp\build\bin\Release\whisper-cli.exe
+```
+
+If you choose not to use Conda, install `ffmpeg`, `git`, `cmake`, and `ninja` first:
+
+- Ubuntu or Debian: `sudo apt install ffmpeg git cmake ninja-build build-essential`
+- macOS with Homebrew: `brew install ffmpeg git cmake ninja`
+- Windows: install the same tools with `winget`, Chocolatey, Scoop, or another local package manager, then build `whisper.cpp` as shown above
+
+## GPU Notes
+
+`--device auto` prefers GPU execution on macOS and when the selected `whisper.cpp` build exposes a GPU backend such as CUDA, Vulkan, OpenCL, Metal, HIP, or SYCL. Actual behavior still depends on the selected binary, drivers, and local hardware.
+
+### NVIDIA CUDA Builds
+
+If you want GPU execution on NVIDIA hardware, install the CUDA toolkit first and build `whisper.cpp` with CUDA enabled:
 
 ```bash
 git clone https://github.com/ggml-org/whisper.cpp.git
@@ -138,90 +143,43 @@ cmake -S whisper.cpp -B whisper.cpp/build -G Ninja -DGGML_CUDA=1 -DBUILD_SHARED_
 cmake --build whisper.cpp/build -j --config Release
 ```
 
-For some newer NVIDIA GPUs, `whisper.cpp` also documents explicitly setting `CMAKE_CUDA_ARCHITECTURES`.
-
-Before running that build, verify that the CUDA toolkit compiler is available:
+Before building, confirm that `nvcc` is available:
 
 ```bash
 nvcc --version
 ```
 
-If `nvcc` is missing, install the CUDA toolkit first. On Ubuntu-family systems, the safest path is usually NVIDIA's apt repository plus the toolkit-only package, not the `cuda` meta-package that may try to manage drivers too:
+If you are using Conda, build the CUDA-enabled binary outside the Conda environment or force a static build with `-DBUILD_SHARED_LIBS=OFF`, otherwise `whisper-cli` may load Conda's CPU-only `ggml` libraries at runtime.
 
-```bash
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt update
-sudo apt install cuda-toolkit
-```
+### Linux Runtime Linkage Check
 
-After installation, make sure `nvcc` is on `PATH`. A typical shell setup is:
+When `--device gpu` is requested on Linux, `submaster` performs an extra runtime check with `ldd`. If the selected `whisper-cli` is dynamically linked against CPU-only `ggml` libraries, `submaster` stops with an explicit error instead of silently running on the CPU.
 
-```bash
-export PATH=/usr/local/cuda-13.2/bin:$PATH
-export LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64:$LD_LIBRARY_PATH
-```
-
-*NOTE*: If you are using Conda, build the CUDA-enabled `whisper.cpp` binary outside the Conda environment or force a static build with `-DBUILD_SHARED_LIBS=OFF`. Otherwise, the resulting `whisper-cli` may load Conda's CPU-only `libggml` shared libraries at runtime even when the local source tree was compiled with `-DGGML_CUDA=1`.
-
-## GPU Troubleshooting
-
-If `submaster` says GPU mode was requested but the machine still runs at high CPU usage, check the backend that your `whisper-cli` binary was built with:
+Useful Linux checks:
 
 ```bash
 ldd "$(which whisper-cli)" | grep ggml
-```
-
-If you only see `libggml-cpu` and do not see `libggml-cuda`, your current `whisper.cpp` binary is CPU-only. In that case, installing Python packages will not enable GPU acceleration. You need a CUDA-enabled `whisper.cpp` build instead.
-
-If you pass an explicit binary, verify that exact file rather than the one on `PATH`:
-
-```bash
-ldd ./whisper.cpp/build/bin/whisper-cli | grep ggml
-```
-
-If that output points at Conda libraries such as `/home/you/miniconda3/envs/.../libggml-cpu.so`, your supposedly GPU-enabled build is still running with CPU-only `ggml` libraries. Rebuild outside Conda or rebuild statically with `-DBUILD_SHARED_LIBS=OFF`.
-
-You can also confirm it directly:
-
-```bash
 whisper-cli -m ./models/ggml-base.bin -f sample.wav -pp -np
 ```
 
-If startup logs contain `whisper_backend_init_gpu: no GPU found`, the current executable is not using your NVIDIA GPU.
+If startup logs contain `whisper_backend_init_gpu: no GPU found`, the current executable is not using your GPU.
 
-`submaster` now performs an extra Linux runtime check when `--device gpu` is requested. If the selected `whisper-cli` is dynamically linked against CPU-only `ggml` libraries at runtime, `submaster` will stop with an explicit error instead of silently continuing on the CPU.
+On macOS, `whisper.cpp` typically uses Metal when the selected build includes it. On Windows, `submaster` auto-detects common `whisper-cli.exe` build locations and nearby GPU backend DLLs. If you keep multiple builds around, pass `--whisper-cli` explicitly.
 
-### If build tools are missing outside Conda
-
-If you choose not to use the Conda environment, install the missing tools manually.
-
-Ubuntu or Debian:
-
-```bash
-sudo apt install ffmpeg git cmake ninja-build build-essential
-```
-
-macOS with Homebrew:
-
-```bash
-brew install ffmpeg git cmake ninja
-```
-
-`whisper.cpp` can then be built with the same `cmake` commands shown above.
-
-## Install the CLI Without Conda
+## Installing The CLI Without Conda
 
 If you are not using the Conda environment, install the package manually:
 
 ```bash
-python3 -m pip install -e .
+python -m pip install -e .
 ```
 
-You can also run it without installation:
+On Windows, `py -3 -m pip install -e .` works as well.
+
+Or run it without installation:
 
 ```bash
-python3 main.py --help
+python main.py --help
 ```
 
 ## Usage
@@ -232,47 +190,19 @@ Basic:
 submaster input.mp4
 ```
 
-Choose model and force GPU:
+Common patterns:
 
 ```bash
 submaster input.mp4 --model turbo --device gpu
-```
-
-Specify language for faster decoding:
-
-```bash
 submaster input.mp4 --language en --model small
-```
-
-Write subtitles into a custom folder:
-
-```bash
 submaster input.mkv --output ./subs/
-```
-
-Keep the normalized WAV file:
-
-```bash
 submaster input.mov --keep-audio
-```
-
-Use a specific `whisper.cpp` binary:
-
-```bash
 submaster input.mp4 --whisper-cli ./whisper.cpp/build/bin/whisper-cli
-```
-
-Show the final `whisper.cpp` timing summary:
-
-```bash
 submaster input.mp4 --show-timings
-```
-
-Show the `whisper_model_load` metadata:
-
-```bash
 submaster input.mp4 --show-model-info
 ```
+
+On Windows, `--output .\subs\` and `--whisper-cli .\whisper.cpp\build\bin\Release\whisper-cli.exe` work as expected.
 
 ## Command Summary
 
@@ -293,30 +223,27 @@ submaster INPUT
 
 ## Notes
 
-- `large` maps to the `ggml-large-v3.bin` whisper.cpp model.
-- `turbo` maps to `ggml-large-v3-turbo.bin`.
-- Audio-only inputs are intentionally rejected. Pass a video file and let `submaster` extract the audio track for transcription.
-- `--device auto` currently prefers GPU on macOS or when `nvidia-smi` reports an NVIDIA device. Actual GPU execution still depends on how `whisper.cpp` was built.
-- `--show-timings` prints the final `whisper_print_timings` block from `whisper.cpp`.
-- `--show-model-info` prints the `whisper_model_load` block emitted when the model is opened.
+- `large` maps to `ggml-large-v3.bin`; `turbo` maps to `ggml-large-v3-turbo.bin`.
+- Audio-only inputs are intentionally rejected. Pass a video file and let `submaster` extract the audio track.
+- `--show-timings` prints the final `whisper_print_timings` block, and `--show-model-info` prints the `whisper_model_load` block.
 - Model files are intentionally ignored by git through `.gitignore`.
 
 ## Validation
 
-Run the small test suite:
+Run the test suite:
 
 ```bash
-python3 -m unittest
+python -m unittest
 ```
 
 Check the CLI wiring:
 
 ```bash
-python3 main.py --help
+python main.py --help
 ```
 
 ## Upstream References
 
 - OpenAI Whisper: <https://github.com/openai/whisper>
 - whisper.cpp: <https://github.com/ggml-org/whisper.cpp>
-- whisper.cpp GGML models: <https://huggingface.co/ggerganov/whisper.cpp>
+- whisper.cpp model files: <https://huggingface.co/ggerganov/whisper.cpp>
