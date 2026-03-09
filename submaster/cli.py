@@ -131,9 +131,8 @@ def main(argv: list[str] | None = None) -> int:
         console.banner("Submaster", f"{input_path.name} -> {output_path.name}")
         if not has_video_stream(input_path):
             raise SubmasterError(
-                "Input must contain a video stream. Audio-only inputs are no longer supported."
+                "Input must contain a video stream."
             )
-        console.info("Detected video input.")
         console.info(
             f"Model: {args.model} | Language: {args.language} | Device: {args.device}"
         )

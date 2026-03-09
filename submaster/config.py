@@ -38,9 +38,9 @@ MODEL_SPECS: dict[str, ModelSpec] = {
     ),
     "large": ModelSpec(
         name="large",
-        filename="ggml-large.bin",
-        download_url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large.bin?download=true",
-        description="Largest standard multilingual model.",
+        filename="ggml-large-v3.bin",
+        download_url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin?download=true",
+        description="Largest standard multilingual model (large-v3).",
     ),
     "turbo": ModelSpec(
         name="turbo",

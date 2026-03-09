@@ -6,21 +6,13 @@
  "mmm#" "mm"#  ##m#"  #    # "mm"#  "mmm"    "mm  "#mm"   #    
 ```
 
-`submaster` is a command-line Python application that turns a video file into a synchronized `.srt` subtitle file.
-
-It uses:
-
-- `ffmpeg` / `ffprobe` to extract and normalize the video audio track into a mono 16 kHz WAV file
-- `whisper.cpp` to run local transcription with CPU or GPU when available
-- automatic GGML model downloads into `./models`
-- an SRT normalization pass so the final file is clean and VLC-friendly
+A command-line Python application that automatically transcribe spoken dialogues into a synchronized `.srt` subtitle file to be used during playback.
 
 ## Features
 
-- Accepts video input
-- Extracts the audio track before transcription
-- Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo`
-- Downloads missing models on demand
+- Accepts video input in various formats, including MP4, MKV, MOV, AVI, and more using `ffmpeg` as a backend
+- Automatically extracts the audio track before transcription
+- Supports `tiny`, `base`, `small`, `medium`, `large` and `turbo` Whisper models via `whisper.cpp` (downloads missing files on demand)
 - Prefers GPU in `--device auto` when a local GPU is detectable
 - Produces compliant `.srt` output with normalized cue numbering and timestamps
 - Shows colored terminal output and progress bars
@@ -28,11 +20,11 @@ It uses:
 ## Project Layout
 
 ```text
-main.py                  Simple entry point
+main.py                  Program entry point
 submaster/               CLI package
-tests/                   Small unit test suite for SRT normalization
 whisper/                 Bundled Linux x86_64 CPU fallback for whisper.cpp
 models/                  Auto-downloaded whisper.cpp model files
+tests/                   Small unit test suite for SRT normalization
 ```
 
 ## Requirements
@@ -301,7 +293,7 @@ submaster INPUT
 
 ## Notes
 
-- `large` maps to the `ggml-large.bin` whisper.cpp model.
+- `large` maps to the `ggml-large-v3.bin` whisper.cpp model.
 - `turbo` maps to `ggml-large-v3-turbo.bin`.
 - Audio-only inputs are intentionally rejected. Pass a video file and let `submaster` extract the audio track for transcription.
 - `--device auto` currently prefers GPU on macOS or when `nvidia-smi` reports an NVIDIA device. Actual GPU execution still depends on how `whisper.cpp` was built.
