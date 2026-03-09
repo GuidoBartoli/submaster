@@ -19,21 +19,27 @@ class WhisperCppRunner:
         self.console = console
         self.cli_path = self._resolve_cli_path(cli_path)
         self.supports_no_gpu_flag = self._supports_flag("-ng")
-        self.gpu_backends = self._detect_gpu_backends()
+        self.gpu_backends = self._detect_gpu_backends_for(self.cli_path)
+
+    def _project_root(self) -> Path:
+        return Path(__file__).resolve().parent.parent
 
     def _resolve_cli_path(self, cli_path: Path | None) -> Path:
-        candidates: list[Path] = []
+        explicit_candidates: list[Path] = []
+        discovered_candidates: list[Path] = []
+        bundled_candidates: list[Path] = []
+
         if cli_path:
-            candidates.append(cli_path)
+            explicit_candidates.append(cli_path)
 
         env_candidate = os.environ.get("WHISPER_CPP_CLI")
         if env_candidate:
-            candidates.append(Path(env_candidate))
+            explicit_candidates.append(Path(env_candidate))
 
         conda_prefix = os.environ.get("CONDA_PREFIX")
         if conda_prefix:
             prefix_path = Path(conda_prefix)
-            candidates.extend(
+            discovered_candidates.extend(
                 [
                     prefix_path / "bin" / "whisper-cli",
                     prefix_path / "bin" / "main",
@@ -45,11 +51,13 @@ class WhisperCppRunner:
         for command_name in ("whisper-cli", "main"):
             resolved = shutil.which(command_name)
             if resolved:
-                candidates.append(Path(resolved))
+                discovered_candidates.append(Path(resolved))
 
         cwd = Path.cwd()
-        # Check the common local build layouts before giving up and asking for --whisper-cli.
-        candidates.extend(
+        project_root = self._project_root()
+
+        # Check the common local build layouts before falling back to the bundled binary.
+        discovered_candidates.extend(
             [
                 cwd / "whisper.cpp" / "build" / "bin" / "whisper-cli",
                 cwd / "whisper.cpp" / "build" / "bin" / "main",
@@ -60,33 +68,82 @@ class WhisperCppRunner:
             ]
         )
 
-        for candidate in candidates:
+        bundled_candidates.extend(
+            [
+                project_root / "whisper" / "whisper-cli-gpu",
+                project_root / "whisper" / "whisper-cli-cpu",
+                project_root / "whisper" / "whisper-cli",
+            ]
+        )
+
+        searched = explicit_candidates + discovered_candidates + bundled_candidates
+
+        for candidate in self._existing_candidates(explicit_candidates):
             if candidate and candidate.is_file() and os.access(candidate, os.X_OK):
                 return candidate.resolve()
 
-        searched = "\n".join(f"  - {item}" for item in candidates if item)
+        ranked_discovered = self._rank_candidates_by_gpu(discovered_candidates)
+        if ranked_discovered:
+            return ranked_discovered[0].resolve()
+
+        ranked_bundled = self._rank_candidates_by_gpu(bundled_candidates)
+        if ranked_bundled:
+            return ranked_bundled[0].resolve()
+
+        searched_text = "\n".join(f"  - {item}" for item in searched if item)
         raise SubmasterError(
             "Unable to find a whisper.cpp executable.\n"
-            "Install or build whisper.cpp, then put 'whisper-cli' on PATH or pass --whisper-cli.\n"
+            "Install or build whisper.cpp, put 'whisper-cli' on PATH, or use the bundled fallback at './whisper/whisper-cli'.\n"
             "If you are using Conda, install 'conda-forge::whisper.cpp'.\n"
             "Note: the PyPI package named 'whisper-cli' is not the whisper.cpp binary used by this app.\n"
-            f"Searched:\n{searched}"
+            f"Searched:\n{searched_text}"
         )
+
+    def _existing_candidates(self, candidates: list[Path]) -> list[Path]:
+        existing: list[Path] = []
+        seen: set[Path] = set()
+        for candidate in candidates:
+            if not candidate:
+                continue
+            candidate = candidate.expanduser()
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                existing.append(candidate)
+        return existing
+
+    def _rank_candidates_by_gpu(self, candidates: list[Path]) -> list[Path]:
+        existing = self._existing_candidates(candidates)
+        if not existing:
+            return []
+
+        gpu_candidates: list[Path] = []
+        cpu_candidates: list[Path] = []
+        for candidate in existing:
+            if self._detect_gpu_backends_for(candidate):
+                gpu_candidates.append(candidate)
+            else:
+                cpu_candidates.append(candidate)
+        return gpu_candidates + cpu_candidates
 
     def _supports_flag(self, flag: str) -> bool:
         for help_flag in ("--help", "-h"):
-            result = subprocess.run(
-                [str(self.cli_path), help_flag],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            try:
+                result = subprocess.run(
+                    [str(self.cli_path), help_flag],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            except OSError:
+                continue
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
             if flag in help_text:
                 return True
         return False
 
-    def _detect_gpu_backends(self) -> set[str]:
+    def _detect_gpu_backends_for(self, cli_path: Path) -> set[str]:
         patterns = {
             "cuda": ("libggml-cuda*", "ggml-cuda*.dll", "ggml-cuda*.dylib"),
             "vulkan": ("libggml-vulkan*", "ggml-vulkan*.dll", "ggml-vulkan*.dylib"),
@@ -97,11 +154,11 @@ class WhisperCppRunner:
         }
 
         root_candidates = {
-            self.cli_path.parent,
-            self.cli_path.parent.parent,
-            self.cli_path.parent.parent / "lib",
-            self.cli_path.parent.parent / "src",
-            self.cli_path.parent.parent / "bin",
+            cli_path.parent,
+            cli_path.parent.parent,
+            cli_path.parent.parent / "lib",
+            cli_path.parent.parent / "src",
+            cli_path.parent.parent / "bin",
         }
 
         detected: set[str] = set()

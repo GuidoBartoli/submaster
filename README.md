@@ -25,6 +25,7 @@ It uses:
 main.py                  Simple entry point
 submaster/               CLI package
 tests/                   Small unit test suite for SRT normalization
+whisper/                 Bundled Linux x86_64 CPU fallback for whisper.cpp
 models/                  Auto-downloaded whisper.cpp model files
 ```
 
@@ -36,6 +37,8 @@ models/                  Auto-downloaded whisper.cpp model files
 - a working `whisper.cpp` executable (`whisper-cli` recommended)
 
 `submaster` itself has no third-party Python runtime dependencies. The Conda environment below installs the project plus the toolchain needed to build `whisper.cpp`.
+
+If no external `whisper-cli` is available, `submaster` falls back to the bundled Linux x86_64 CPU binary in [whisper/whisper-cli](/home/guido/Projects/submaster/whisper/whisper-cli).
 
 ## Conda Setup
 
@@ -75,6 +78,13 @@ conda install -n submaster -c conda-forge whisper.cpp
 ## Install `whisper.cpp`
 
 `submaster` calls a local `whisper.cpp` executable. In the normal Conda setup above, `whisper.cpp` should already be installed and `whisper-cli` should be available immediately.
+
+Executable lookup order is:
+
+1. `--whisper-cli`
+2. `WHISPER_CPP_CLI`
+3. Conda / `PATH` / common local build outputs, preferring a GPU-capable build when one is detected
+4. bundled repo fallback at [whisper/whisper-cli](/home/guido/Projects/submaster/whisper/whisper-cli)
 
 Do not use:
 
