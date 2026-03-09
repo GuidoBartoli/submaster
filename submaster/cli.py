@@ -8,7 +8,7 @@ from pathlib import Path
 from .config import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_THREADS, MODEL_SPECS
 from .console import Console
 from .errors import SubmasterError
-from .media import create_work_dir, detect_media_type, extract_audio
+from .media import create_work_dir, extract_audio, has_video_stream
 from .models import ensure_model_available
 from .srt import normalize_srt
 from .whisper_cpp import WhisperCppRunner
@@ -17,10 +17,10 @@ from .whisper_cpp import WhisperCppRunner
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="submaster",
-        description="Create synchronized .srt subtitles from audio or video using whisper.cpp.",
+        description="Create synchronized .srt subtitles from a video file using whisper.cpp.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("input", help="Path to an audio or video file.")
+    parser.add_argument("input", help="Path to a video file.")
     parser.add_argument(
         "-o",
         "--output",
@@ -70,6 +70,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep the normalized WAV file next to the generated subtitle.",
     )
+    parser.add_argument(
+        "--show-timings",
+        action="store_true",
+        help="Display the final whisper.cpp timing summary.",
+    )
+    parser.add_argument(
+        "--show-model-info",
+        action="store_true",
+        help="Display whisper.cpp model-load metadata.",
+    )
     return parser
 
 
@@ -118,9 +128,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        media_type = detect_media_type(input_path)
         console.banner("Submaster", f"{input_path.name} -> {output_path.name}")
-        console.info(f"Detected {media_type} input.")
+        if not has_video_stream(input_path):
+            raise SubmasterError(
+                "Input must contain a video stream. Audio-only inputs are no longer supported."
+            )
+        console.info("Detected video input.")
         console.info(
             f"Model: {args.model} | Language: {args.language} | Device: {args.device}"
         )
@@ -135,10 +148,7 @@ def main(argv: list[str] | None = None) -> int:
 
         work_dir = create_work_dir()
         audio_path = work_dir / f"{input_path.stem}.wav"
-        if media_type == "video":
-            console.note("Extracting audio track from video.")
-        else:
-            console.note("Normalizing audio for whisper.cpp.")
+        console.note("Extracting audio track from video.")
         extract_audio(input_path, audio_path, console)
 
         output_base = work_dir / output_path.stem
@@ -149,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
             language=args.language,
             requested_device=args.device,
             threads=args.threads,
+            show_timings=args.show_timings,
+            show_model_info=args.show_model_info,
         )
 
         normalized_srt = normalize_srt(raw_srt_path.read_text(encoding="utf-8"))

@@ -14,6 +14,8 @@ from .errors import SubmasterError
 
 class WhisperCppRunner:
     PROGRESS_RE = re.compile(r"progress\s*=\s*(?P<percent>\d+)%")
+    TIMING_RE = re.compile(r"whisper_print_timings:\s*(?P<detail>.+)")
+    MODEL_LOAD_RE = re.compile(r"whisper_model_load:\s*(?P<detail>.+)")
 
     def __init__(self, console: Console, cli_path: Path | None = None) -> None:
         self.console = console
@@ -177,6 +179,97 @@ class WhisperCppRunner:
                         continue
         return detected
 
+    def _inspect_linked_ggml_libraries(self) -> tuple[set[str], list[str]]:
+        if platform.system() != "Linux":
+            return set(), []
+
+        try:
+            result = subprocess.run(
+                ["ldd", str(self.cli_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return set(), []
+
+        if result.returncode != 0:
+            return set(), []
+
+        lines = [line.strip() for line in result.stdout.splitlines() if "ggml" in line]
+        linked_backends: set[str] = set()
+        for line in lines:
+            lowered = line.lower()
+            if "libggml-cuda" in lowered:
+                linked_backends.add("cuda")
+            if "libggml-vulkan" in lowered:
+                linked_backends.add("vulkan")
+            if "libggml-opencl" in lowered:
+                linked_backends.add("opencl")
+            if "libggml-metal" in lowered:
+                linked_backends.add("metal")
+            if "libggml-hip" in lowered:
+                linked_backends.add("hip")
+            if "libggml-sycl" in lowered:
+                linked_backends.add("sycl")
+        return linked_backends, lines
+
+    def _verify_gpu_runtime_linkage(self, requested: str, device: str) -> None:
+        if requested != "gpu" or device != "gpu":
+            return
+        if platform.system() != "Linux":
+            return
+
+        linked_backends, linked_lines = self._inspect_linked_ggml_libraries()
+        if not linked_lines:
+            return
+        if linked_backends:
+            return
+
+        detail = "\n".join(linked_lines)
+        raise SubmasterError(
+            "GPU was requested, but the selected whisper.cpp executable is dynamically linked "
+            "against CPU-only ggml libraries at runtime.\n"
+            "This usually happens when a Conda environment provides libggml-cpu and shadows "
+            "your local CUDA-enabled whisper.cpp build.\n"
+            "Rebuild whisper.cpp outside Conda with -DGGML_CUDA=1 -DBUILD_SHARED_LIBS=OFF, "
+            "or make sure libggml-cuda is the library that ldd resolves.\n"
+            f"ldd output:\n{detail}"
+        )
+
+    def _extract_timing_lines(self, lines: list[str]) -> list[str]:
+        timings: list[str] = []
+        for line in lines:
+            match = self.TIMING_RE.search(line)
+            if not match:
+                continue
+            timings.append(match.group("detail").strip())
+        return timings
+
+    def _extract_model_load_lines(self, lines: list[str]) -> list[str]:
+        details: list[str] = []
+        for line in lines:
+            match = self.MODEL_LOAD_RE.search(line)
+            if not match:
+                continue
+            details.append(match.group("detail").strip())
+        return details
+
+    def _print_model_summary(self, model_load_lines: list[str]) -> None:
+        if not model_load_lines:
+            return
+        self.console.info("whisper.cpp model:")
+        for detail in model_load_lines:
+            self.console.line(f"       {detail}")
+
+    def _print_timing_summary(self, elapsed_seconds: float, timing_lines: list[str]) -> None:
+        self.console.info(f"Transcription wall time: {format_seconds(elapsed_seconds)}")
+        if not timing_lines:
+            return
+        self.console.info("whisper.cpp timings:")
+        for timing_line in timing_lines:
+            self.console.line(f"       {timing_line}")
+
     def resolve_device(self, requested: str) -> str:
         normalized = requested.lower()
         if normalized not in {"auto", "cpu", "gpu"}:
@@ -211,6 +304,8 @@ class WhisperCppRunner:
         language: str,
         requested_device: str,
         threads: int,
+        show_timings: bool,
+        show_model_info: bool,
     ) -> Path:
         requested = requested_device.lower()
         device = self.resolve_device(requested_device)
@@ -224,7 +319,6 @@ class WhisperCppRunner:
             "-of",
             str(output_base),
             "-osrt",
-            "-np",
             "-pp",
             "-t",
             str(max(1, threads)),
@@ -250,6 +344,8 @@ class WhisperCppRunner:
             self.console.info(f"GPU mode requested via {self.cli_path.name} ({backend_label}).")
         else:
             self.console.info(f"CPU mode requested via {self.cli_path.name} ({backend_label}).")
+
+        self._verify_gpu_runtime_linkage(requested, device)
 
         process = subprocess.Popen(
             command,
@@ -284,15 +380,20 @@ class WhisperCppRunner:
             progress.update(last_percent, extra=extra)
 
         return_code = process.wait()
+        total_elapsed = time.monotonic() - started_at
         finish_extra = ""
         if last_percent > 0 and last_percent < 100:
-            elapsed = time.monotonic() - started_at
-            finish_extra = f"stopped at {last_percent}% after {format_seconds(elapsed)}"
+            finish_extra = f"stopped at {last_percent}% after {format_seconds(total_elapsed)}"
         progress.finish(100 if return_code == 0 else last_percent, extra=finish_extra)
 
         if return_code != 0:
             detail = "\n".join(output_lines)
             raise SubmasterError(detail or "whisper.cpp transcription failed.")
+
+        if show_model_info:
+            self._print_model_summary(self._extract_model_load_lines(output_lines))
+        if show_timings:
+            self._print_timing_summary(total_elapsed, self._extract_timing_lines(output_lines))
 
         srt_path = output_base.with_suffix(".srt")
         if not srt_path.exists():

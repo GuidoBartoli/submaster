@@ -28,12 +28,11 @@ def _run_probe(input_path: Path, entries: str, target: str) -> str:
     return result.stdout
 
 
-def detect_media_type(input_path: Path) -> str:
+def has_video_stream(input_path: Path) -> bool:
     output = _run_probe(input_path, "stream=codec_type", "-show_streams")
     payload = json.loads(output or "{}")
     streams = payload.get("streams", [])
-    has_video = any(stream.get("codec_type") == "video" for stream in streams)
-    return "video" if has_video else "audio"
+    return any(stream.get("codec_type") == "video" for stream in streams)
 
 
 def probe_duration_seconds(input_path: Path) -> float | None:

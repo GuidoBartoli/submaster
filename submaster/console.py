@@ -74,13 +74,13 @@ class Console:
         self.line(f"{_style(self.color, CYAN, '[STEP]')} {message}")
 
     def success(self, message: str) -> None:
-        self.line(f"{_style(self.color, GREEN, '[OK]')} {message}")
+        self.line(f"{_style(self.color, GREEN, '[ OK ]')} {message}")
 
     def warn(self, message: str) -> None:
         self.line(f"{_style(self.color, YELLOW, '[WARN]')} {message}")
 
     def error(self, message: str) -> None:
-        self.line(f"{_style(self.color, RED, '[ERROR]')} {message}")
+        self.line(f"{_style(self.color, RED, '[ERR!]')} {message}")
 
     def progress(self, label: str, total: float | None, unit: str = "") -> "ProgressBar":
         return ProgressBar(self, label=label, total=total, unit=unit)
@@ -100,6 +100,7 @@ class ProgressBar:
         self._start = time.monotonic()
         self._last_render = 0.0
         self._closed = False
+        self._last_line_length = 0
         self._width = max(20, min(40, shutil.get_terminal_size((100, 20)).columns - 48))
         self._render(0.0, "")
 
@@ -143,7 +144,11 @@ class ProgressBar:
         line = f"\r{prefix} |{bar}| {percent} {suffix}"
         if final:
             line += " done"
+        visible_length = max(0, len(line) - 1)
+        if visible_length < self._last_line_length:
+            line += " " * (self._last_line_length - visible_length)
         self.console._write(line)
+        self._last_line_length = visible_length
         self._last_render = time.monotonic()
 
 
