@@ -80,7 +80,7 @@ class Console:
         self.line(f"{_style(self.color, YELLOW, '[WARN]')} {message}")
 
     def error(self, message: str) -> None:
-        self.line(f"{_style(self.color, RED, '[ERR]')} {message}")
+        self.line(f"{_style(self.color, RED, '[ERROR]')} {message}")
 
     def progress(self, label: str, total: float | None, unit: str = "") -> "ProgressBar":
         return ProgressBar(self, label=label, total=total, unit=unit)

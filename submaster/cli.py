@@ -18,6 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="submaster",
         description="Create synchronized .srt subtitles from audio or video using whisper.cpp.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("input", help="Path to an audio or video file.")
     parser.add_argument(
@@ -80,12 +81,18 @@ def resolve_output_path(source_path: Path, requested_output: str | None) -> Path
     if output_path.exists() and output_path.is_dir():
         return output_path / f"{source_path.stem}.srt"
     if output_path.suffix.lower() != ".srt":
-        return output_path / f"{source_path.stem}.srt" if requested_output.endswith(os.sep) else output_path.with_suffix(".srt")
+        return (
+            output_path / f"{source_path.stem}.srt"
+            if requested_output.endswith(os.sep)
+            else output_path.with_suffix(".srt")
+        )
     return output_path
 
 
 def ensure_runtime_dependencies() -> None:
-    missing = [command for command in ("ffmpeg", "ffprobe") if shutil.which(command) is None]
+    missing = [
+        command for command in ("ffmpeg", "ffprobe") if shutil.which(command) is None
+    ]
     if missing:
         joined = ", ".join(missing)
         raise SubmasterError(f"Missing required external tool(s): {joined}.")
@@ -106,16 +113,25 @@ def main(argv: list[str] | None = None) -> int:
 
         output_path = resolve_output_path(input_path, args.output).resolve()
         if output_path.exists() and not args.overwrite:
-            raise SubmasterError(f"Output file already exists: {output_path}. Use --overwrite to replace it.")
+            raise SubmasterError(
+                f"Output file already exists: {output_path}. Use --overwrite to replace it."
+            )
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         media_type = detect_media_type(input_path)
         console.banner("Submaster", f"{input_path.name} -> {output_path.name}")
         console.info(f"Detected {media_type} input.")
-        console.info(f"Model: {args.model} | Language: {args.language} | Device: {args.device}")
+        console.info(
+            f"Model: {args.model} | Language: {args.language} | Device: {args.device}"
+        )
 
-        runner = WhisperCppRunner(console=console, cli_path=Path(args.whisper_cli).expanduser() if args.whisper_cli else None)
-        model_path = ensure_model_available(args.model, Path(args.models_dir).expanduser().resolve(), console)
+        runner = WhisperCppRunner(
+            console=console,
+            cli_path=Path(args.whisper_cli).expanduser() if args.whisper_cli else None,
+        )
+        model_path = ensure_model_available(
+            args.model, Path(args.models_dir).expanduser().resolve(), console
+        )
 
         work_dir = create_work_dir()
         audio_path = work_dir / f"{input_path.stem}.wav"

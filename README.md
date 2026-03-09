@@ -1,4 +1,10 @@
-# submaster
+```                                                               
+  mmmm         #      m    m                 m                 
+ #"   " m   m  #mmm   ##  ##  mmm    mmm   mm#mm   mmm    m mm 
+ "#mmm  #   #  #" "#  # ## # "   #  #   "    #    #"  #   #"  "
+     "# #   #  #   #  # "" # m"""#   """m    #    #""""   #    
+ "mmm#" "mm"#  ##m#"  #    # "mm"#  "mmm"    "mm  "#mm"   #    
+```
 
 `submaster` is a command-line Python application that turns an audio or video file into a synchronized `.srt` subtitle file.
 
