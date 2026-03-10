@@ -1,18 +1,17 @@
 <p align="center">
   <img src="submaster.png" width="600px" alt="Submaster" />
-  <br><b>An open source video subtitle utility</b>
+  <br><b>An open source tool for video subtitle generation and translation</b>
 </p>
 
-`submaster` is a command-line Python application that transcribes spoken dialogue from a video file into a synchronized `.srt` subtitle file with `ffmpeg` and `whisper.cpp`. It can also translate the generated subtitles offline with `llama.cpp` and Tencent HY-MT GGUF models.
+**SubMaster** is a command-line Python application that takes a video as input and transcribes spoken dialogues into a synchronized subtitle file with optional translation into another language.
 
 ## Features
 
 - Accepts common video formats such as MP4, MKV, MOV, AVI, and RMVB
-- Extracts and normalizes mono WAV audio automatically before transcription
+- Extracts and normalizes mono WAV audio using `ffmpeg` before transcription
 - Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
-- Optionally translates subtitles into another language with Tencent HY-MT 1.5 `small` (1.8B) or `large` (7B)
+- Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
 - Downloads missing Whisper and HY-MT model files on demand into the local `models/` cache
-- Uses `Q4_K_M` GGUF translation models by default because the int4 quantization is the most practical tradeoff for local offline use across CPU and GPU setups
 - Works on Linux, macOS, and Windows when `ffmpeg`, `whisper.cpp`, and `llama.cpp` are available
 - Prefers GPU execution in `--device auto` when the selected native runtime appears GPU-capable
 - Produces normalized `.srt` output with clean cue numbering and timestamps
@@ -27,16 +26,6 @@
 
 The bundled fallback is only for `whisper.cpp` on Linux `x86_64`. Translation always requires a working `llama-cli`.
 
-## Project Layout
-
-```text
-main.py                  Program entry point
-submaster/               CLI package
-whisper/                 Repo-local whisper.cpp fallback metadata and Linux binary
-models/                  Auto-downloaded Whisper and HY-MT model files
-tests/                   Unit tests
-```
-
 ## Requirements
 
 - Python 3.10+
@@ -47,7 +36,9 @@ tests/                   Unit tests
 
 `submaster` has no third-party Python runtime dependencies. The package metadata in [`pyproject.toml`](pyproject.toml) allows Python `>=3.10`. The provided Conda environment in [`environment.yml`](environment.yml) uses Python 3.12 as the default tested setup.
 
-## Quick Start With Conda
+## Installation
+
+### Conda Environment (Recommended)
 
 The simplest cross-platform setup is the provided Conda environment:
 
@@ -77,9 +68,25 @@ conda install -n submaster -c conda-forge whisper.cpp
 conda install -n submaster -c conda-forge llama.cpp
 ```
 
+### Manual pip installation
+
+If you are not using the Conda environment, install the package manually:
+
+```bash
+python -m pip install -e .
+```
+
+On Windows, `py -3 -m pip install -e .` works as well.
+
+Or run it without installation:
+
+```bash
+python main.py --help
+```
+
 ## Translation Backend
 
-Subtitle translation uses Tencent HY-MT 1.5 GGUF models through `llama.cpp`.
+Subtitle translation uses **Tencent HY-MT 1.5 GGUF** models through `llama.cpp`.
 
 Available translation sizes:
 
@@ -119,15 +126,9 @@ Common local build outputs include:
 - Linux and macOS: `./llama.cpp/build/bin/llama-cli`, `./build/bin/llama-cli`
 - Windows: `.\llama.cpp\build\bin\Release\llama-cli.exe`, `.\build\bin\Release\llama-cli.exe`, plus non-`Release` `.exe` variants
 
-## Installing Or Building `whisper.cpp`
+## Building `whisper.cpp` from source
 
-If your environment was created before `whisper.cpp` was added to [`environment.yml`](environment.yml), install it explicitly:
-
-```bash
-conda install -n submaster -c conda-forge whisper.cpp
-```
-
-### Build From Source
+### CPU builds
 
 ```bash
 git clone https://github.com/ggml-org/whisper.cpp.git
@@ -147,15 +148,23 @@ Windows PowerShell equivalent:
 submaster input.mp4 --whisper-cli .\whisper.cpp\build\bin\Release\whisper-cli.exe
 ```
 
-## Installing Or Building `llama.cpp`
-
-If your environment was created before `llama.cpp` was added to [`environment.yml`](environment.yml), install it explicitly:
+### GPU builds (CUDA example)
 
 ```bash
-conda install -n submaster -c conda-forge llama.cpp
+git clone https://github.com/ggml-org/whisper.cpp.git
+cmake -S whisper.cpp -B whisper.cpp/build -G Ninja -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=OFF
+cmake --build whisper.cpp/build -j --config Release
 ```
 
-### Build From Source
+Before building, confirm that `nvcc` is available:
+
+```bash
+nvcc --version
+```
+
+## Building `llama.cpp` from source
+
+### CPU builds
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp.git
@@ -181,29 +190,7 @@ If you choose not to use Conda, install `ffmpeg`, `git`, `cmake`, and `ninja` fi
 - macOS with Homebrew: `brew install ffmpeg git cmake ninja`
 - Windows: install the same tools with `winget`, Chocolatey, Scoop, or another local package manager, then build `whisper.cpp` and `llama.cpp` as shown above
 
-## GPU Notes
-
-`--device auto` prefers GPU execution on macOS and when the selected native runtime exposes a GPU backend such as CUDA, Vulkan, OpenCL, Metal, HIP, or SYCL. Actual behavior still depends on the selected binary, drivers, and local hardware.
-
-### `whisper.cpp` GPU Builds
-
-For NVIDIA CUDA:
-
-```bash
-git clone https://github.com/ggml-org/whisper.cpp.git
-cmake -S whisper.cpp -B whisper.cpp/build -G Ninja -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=OFF
-cmake --build whisper.cpp/build -j --config Release
-```
-
-Before building, confirm that `nvcc` is available:
-
-```bash
-nvcc --version
-```
-
-### `llama.cpp` GPU Builds
-
-For NVIDIA CUDA:
+### GPU builds (CUDA example)
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp.git
@@ -220,7 +207,7 @@ cmake --build llama.cpp/build -j --config Release
 
 On macOS, `whisper.cpp` and `llama.cpp` typically use Metal when the selected build includes it. On Windows, `submaster` auto-detects common local `.exe` build outputs and nearby GPU backend DLLs. If you keep multiple builds around, pass `--whisper-cli` and `--llama-cli` explicitly.
 
-### Linux Runtime Linkage Check
+## Linux Runtime Linkage Check
 
 When `--device gpu` is requested on Linux, `submaster` performs an extra runtime check with `ldd` for both `whisper.cpp` and `llama.cpp`. If the selected executable is dynamically linked against CPU-only `ggml` libraries, `submaster` stops with an explicit error instead of silently running on the CPU.
 
@@ -232,22 +219,6 @@ ldd "$(which llama-cli)" | grep ggml
 ```
 
 If startup logs contain messages such as `no GPU found`, the current executable is not using your GPU.
-
-## Installing The CLI Without Conda
-
-If you are not using the Conda environment, install the package manually:
-
-```bash
-python -m pip install -e .
-```
-
-On Windows, `py -3 -m pip install -e .` works as well.
-
-Or run it without installation:
-
-```bash
-python main.py --help
-```
 
 ## Usage
 
@@ -280,34 +251,6 @@ submaster input.mp4 --show-model-info
 On Windows, `--output .\subs\`, `--whisper-cli .\whisper.cpp\build\bin\Release\whisper-cli.exe`, and `--llama-cli .\llama.cpp\build\bin\Release\llama-cli.exe` work as expected.
 
 If `--translate-to` is set, the written `.srt` file contains the translated subtitles. If you want both source-language and translated subtitle files, run the command twice with different output paths.
-
-## Command Summary
-
-```text
-submaster INPUT
-  [-o OUTPUT]
-  [-m {tiny,base,small,medium,large,turbo}]
-  [-l LANGUAGE]
-  [--device {auto,cpu,gpu}]
-  [--models-dir MODELS_DIR]
-  [--whisper-cli PATH]
-  [--threads N]
-  [--overwrite]
-  [--keep-audio]
-  [--show-timings]
-  [--show-model-info]
-  [--translate-to LANGUAGE]
-  [--translation-model {small,large}]
-  [--llama-cli PATH]
-```
-
-## Notes
-
-- `large` maps to `ggml-large-v3.bin`; `turbo` maps to `ggml-large-v3-turbo.bin`.
-- Translation `small` maps to `HY-MT1.5-1.8B-Q4_K_M.gguf`; translation `large` maps to `HY-MT1.5-7B-Q4_K_M.gguf`.
-- Audio-only inputs are intentionally rejected. Pass a video file and let `submaster` extract the audio track.
-- `--show-timings` prints the final `whisper_print_timings` block, and `--show-model-info` prints the `whisper_model_load` block.
-- Model files are intentionally ignored by git through `.gitignore`.
 
 ## Validation
 

@@ -7,11 +7,31 @@ from submaster.translation import SubtitleTranslator, resolve_translation_langua
 
 
 class DummyRunner:
+    """Minimal runner stub that returns scripted translation responses."""
+
     def __init__(self, responses: list[str]) -> None:
+        """Store queued responses and capture prompts for assertions.
+
+        :param responses: Translation outputs to return on successive calls.
+        :type responses: list[str]
+        """
         self.responses = responses
         self.prompts: list[str] = []
 
     def run_prompt(self, model_path: Path, prompt: str, requested_device: str, threads: int) -> str:
+        """Return the next scripted response and remember the incoming prompt.
+
+        :param model_path: Model path provided by the translator.
+        :type model_path: pathlib.Path
+        :param prompt: Prompt text passed to the runner.
+        :type prompt: str
+        :param requested_device: Requested device mode for the call.
+        :type requested_device: str
+        :param threads: Thread count for the call.
+        :type threads: int
+        :returns: Next scripted translation response.
+        :rtype: str
+        """
         self.prompts.append(prompt)
         if not self.responses:
             raise AssertionError("No dummy translation responses left.")
@@ -19,12 +39,35 @@ class DummyRunner:
 
 
 class TranslationTests(unittest.TestCase):
+    """Exercise subtitle translation batching and fallback behavior."""
+
     def _console(self) -> SimpleNamespace:
+        """Create a console stub with no-op progress reporting.
+
+        :returns: Console-like namespace for translator tests.
+        :rtype: types.SimpleNamespace
+        """
         class DummyProgress:
+            """No-op progress helper used by translation tests."""
+
             def update(self, _completed: float, extra: str = "") -> None:
+                """Ignore intermediate progress updates in tests.
+
+                :param _completed: Completed work value.
+                :type _completed: float
+                :param extra: Optional progress suffix.
+                :type extra: str
+                """
                 return None
 
             def finish(self, _completed: float | None = None, extra: str = "") -> None:
+                """Ignore final progress updates in tests.
+
+                :param _completed: Completed work value.
+                :type _completed: float | None
+                :param extra: Optional progress suffix.
+                :type extra: str
+                """
                 return None
 
         return SimpleNamespace(
@@ -34,12 +77,14 @@ class TranslationTests(unittest.TestCase):
         )
 
     def test_resolve_translation_language_accepts_alias(self) -> None:
+        """Verify that common language aliases normalize to canonical codes."""
         language = resolve_translation_language("Italian")
 
         self.assertEqual(language.code, "it")
         self.assertEqual(language.name, "Italian")
 
     def test_translate_cues_preserves_timings(self) -> None:
+        """Verify that translated cues keep their original timing boundaries."""
         runner = DummyRunner(
             [
                 "[[[cue:1]]]\nciao\n[[[/cue]]]\n\n[[[cue:2]]]\ncome stai?\n[[[/cue]]]",
@@ -68,6 +113,7 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(translated[1].end_ms, 2_000)
 
     def test_translate_batch_falls_back_to_single_cues_when_markup_is_invalid(self) -> None:
+        """Verify that invalid batch markup triggers single-cue retry behavior."""
         runner = DummyRunner(
             [
                 "This is not parseable.",
@@ -97,6 +143,7 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(len(runner.prompts), 3)
 
     def test_build_batch_prompt_uses_source_language_hint(self) -> None:
+        """Verify that prompts include the normalized source-language hint."""
         runner = DummyRunner(["[[[cue:1]]]\nciao\n[[[/cue]]]"])
         translator = SubtitleTranslator(
             console=self._console(),

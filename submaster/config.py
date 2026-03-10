@@ -5,12 +5,25 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ModelSpec:
+    """Describe a downloadable model artifact.
+
+    :param name: Human-readable model identifier exposed through the CLI.
+    :type name: str
+    :param filename: Local filename used when storing the model on disk.
+    :type filename: str
+    :param download_url: Remote URL used to fetch the model binary.
+    :type download_url: str
+    :param description: Short explanation of the model tradeoffs.
+    :type description: str
+    """
+
     name: str
     filename: str
     download_url: str
     description: str
 
 
+# Whisper transcription models exposed by the CLI.
 WHISPER_MODEL_SPECS: dict[str, ModelSpec] = {
     "tiny": ModelSpec(
         name="tiny",
@@ -50,6 +63,7 @@ WHISPER_MODEL_SPECS: dict[str, ModelSpec] = {
     ),
 }
 
+# Tencent HY-MT translation models used by the optional translation stage.
 TRANSLATION_MODEL_SPECS: dict[str, ModelSpec] = {
     "small": ModelSpec(
         name="small",
@@ -83,12 +97,14 @@ TRANSLATION_MODEL_SPECS: dict[str, ModelSpec] = {
 # Backwards-compatible alias used by the existing whisper-only code path and tests.
 MODEL_SPECS = WHISPER_MODEL_SPECS
 
+# Default CLI values shared across modules.
 DEFAULT_MODEL = "base"
 DEFAULT_TRANSLATION_MODEL = "small"
 DEFAULT_LANGUAGE = "auto"
 DEFAULT_SAMPLE_RATE = 16_000
 DEFAULT_THREADS = 4
 
+# llama.cpp runtime defaults tuned for subtitle translation prompts.
 LLAMA_CONTEXT_SIZE = 4_096
 LLAMA_MAX_BATCH_CUES = 12
 LLAMA_MAX_BATCH_CHARS = 1_600
@@ -99,6 +115,7 @@ LLAMA_TOP_K = 20
 LLAMA_TOP_P = 0.6
 LLAMA_REPEAT_PENALTY = 1.05
 
+# Published language labels used to normalize user-facing translation targets.
 TRANSLATION_LANGUAGES: dict[str, str] = {
     "ar": "Arabic",
     "bn": "Bengali",

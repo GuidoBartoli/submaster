@@ -21,9 +21,20 @@ from .errors import SubmasterError
 
 
 class LlamaCppRunner:
+    """Discover and invoke a local `llama.cpp` command-line executable."""
+
     def __init__(self, console: Console, cli_path: Path | None = None) -> None:
+        """Initialize the runner and inspect the selected executable.
+
+        :param console: Console used for status, warnings, and spinner output.
+        :type console: Console
+        :param cli_path: Optional explicit path to a `llama.cpp` executable.
+        :type cli_path: pathlib.Path | None
+        :raises SubmasterError: If no usable executable can be found.
+        """
         self.console = console
         self.cli_path = self._resolve_cli_path(cli_path)
+        # Cache supported flags and GPU backends once so translation calls can stay fast.
         self.supports_ngl_flag = self._supports_any_flag("-ngl", "--n-gpu-layers")
         self.supports_simple_io = self._supports_any_flag("--simple-io")
         self.supports_no_display_prompt = self._supports_any_flag("--no-display-prompt")
@@ -32,13 +43,30 @@ class LlamaCppRunner:
         self._announced_modes: set[str] = set()
 
     def _project_root(self) -> Path:
+        """Return the repository root used for local binary discovery.
+
+        :returns: Repository root path.
+        :rtype: pathlib.Path
+        """
         return Path(__file__).resolve().parent.parent
 
     def _windows_pathexts(self) -> tuple[str, ...]:
+        """Return executable suffixes recognized on Windows.
+
+        :returns: Normalized `PATHEXT` suffix list.
+        :rtype: tuple[str, ...]
+        """
         raw_value = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
         return tuple(ext.lower() for ext in raw_value.split(";") if ext.strip())
 
     def _is_executable_file(self, candidate: Path) -> bool:
+        """Check whether a candidate path is an executable file.
+
+        :param candidate: Candidate filesystem path to inspect.
+        :type candidate: pathlib.Path
+        :returns: `True` when the path points to an executable file.
+        :rtype: bool
+        """
         if not candidate.is_file():
             return False
         if platform.system() == "Windows":
@@ -46,18 +74,36 @@ class LlamaCppRunner:
         return os.access(candidate, os.X_OK)
 
     def _expand_explicit_candidate(self, candidate: Path) -> list[Path]:
+        """Expand an explicit executable path into platform-specific variants.
+
+        :param candidate: User-provided executable path.
+        :type candidate: pathlib.Path
+        :returns: Candidate paths to try in order.
+        :rtype: list[pathlib.Path]
+        """
         expanded = [candidate.expanduser()]
         if platform.system() != "Windows" or candidate.suffix:
             return expanded
 
+        # Bare Windows executable names may rely on PATHEXT rather than an explicit suffix.
         for suffix in self._windows_pathexts():
             expanded.append(candidate.with_suffix(suffix))
         return expanded
 
     def _path_command_names(self) -> tuple[str, ...]:
+        """Return executable names to search on `PATH`.
+
+        :returns: Command names accepted for PATH discovery.
+        :rtype: tuple[str, ...]
+        """
         return ("llama-cli", "main")
 
     def _local_command_names(self) -> tuple[str, ...]:
+        """Return executable names to search in local build directories.
+
+        :returns: Platform-appropriate local command names.
+        :rtype: tuple[str, ...]
+        """
         base_names = self._path_command_names()
         if platform.system() != "Windows":
             return base_names
@@ -65,6 +111,14 @@ class LlamaCppRunner:
         return exe_names + base_names
 
     def _common_build_directories(self, root: Path) -> list[Path]:
+        """List common `llama.cpp` build output directories under a root.
+
+        :param root: Root directory to inspect.
+        :type root: pathlib.Path
+        :returns: Deduplicated build directories to search.
+        :rtype: list[pathlib.Path]
+        """
+        # Cover both in-repo builds and standard CMake configuration subdirectories.
         directories = [
             root / "llama.cpp" / "build" / "bin",
             root / "llama.cpp" / "build",
@@ -84,12 +138,30 @@ class LlamaCppRunner:
         return expanded
 
     def _candidate_paths(self, directories: list[Path], names: tuple[str, ...]) -> list[Path]:
+        """Build full candidate paths from directories and executable names.
+
+        :param directories: Directories to search.
+        :type directories: list[pathlib.Path]
+        :param names: Executable basenames to combine with each directory.
+        :type names: tuple[str, ...]
+        :returns: Candidate executable paths.
+        :rtype: list[pathlib.Path]
+        """
         return [directory / name for directory in directories for name in names]
 
     def _resolve_cli_path(self, cli_path: Path | None) -> Path:
+        """Resolve the best available `llama.cpp` executable path.
+
+        :param cli_path: Optional explicit executable path from the caller.
+        :type cli_path: pathlib.Path | None
+        :returns: Resolved executable path.
+        :rtype: pathlib.Path
+        :raises SubmasterError: If no usable executable can be found.
+        """
         explicit_candidates: list[Path] = []
         discovered_candidates: list[Path] = []
 
+        # Explicit CLI arguments and environment variables have highest priority.
         if cli_path:
             explicit_candidates.extend(self._expand_explicit_candidate(cli_path))
 
@@ -97,6 +169,7 @@ class LlamaCppRunner:
         if env_candidate:
             explicit_candidates.extend(self._expand_explicit_candidate(Path(env_candidate)))
 
+        # Conda installs often place the executable and shared libraries outside the normal PATH.
         conda_prefix = os.environ.get("CONDA_PREFIX")
         if conda_prefix:
             prefix_path = Path(conda_prefix)
@@ -113,11 +186,13 @@ class LlamaCppRunner:
                 )
             )
 
+        # Search PATH next so system installs outrank ad-hoc local builds.
         for command_name in self._path_command_names():
             resolved = shutil.which(command_name)
             if resolved:
                 discovered_candidates.append(Path(resolved))
 
+        # Finally search common local build layouts in the current working tree and repo root.
         cwd = Path.cwd()
         project_root = self._project_root()
         discovered_candidates.extend(
@@ -129,10 +204,12 @@ class LlamaCppRunner:
 
         searched = explicit_candidates + discovered_candidates
 
+        # Respect explicit paths as long as they resolve to a runnable executable.
         for candidate in self._existing_candidates(explicit_candidates):
             if candidate and self._is_executable_file(candidate):
                 return candidate.resolve()
 
+        # Prefer GPU-capable builds when discovery finds multiple executables.
         ranked_discovered = self._rank_candidates_by_gpu(discovered_candidates)
         if ranked_discovered:
             return ranked_discovered[0].resolve()
@@ -147,6 +224,13 @@ class LlamaCppRunner:
         )
 
     def _existing_candidates(self, candidates: list[Path]) -> list[Path]:
+        """Filter a candidate list down to unique executable files.
+
+        :param candidates: Raw candidate paths to inspect.
+        :type candidates: list[pathlib.Path]
+        :returns: Existing executable candidates.
+        :rtype: list[pathlib.Path]
+        """
         existing: list[Path] = []
         seen: set[Path] = set()
         for candidate in candidates:
@@ -161,10 +245,18 @@ class LlamaCppRunner:
         return existing
 
     def _rank_candidates_by_gpu(self, candidates: list[Path]) -> list[Path]:
+        """Rank executable candidates so GPU-capable builds come first.
+
+        :param candidates: Raw candidate paths to rank.
+        :type candidates: list[pathlib.Path]
+        :returns: Existing candidates ordered by GPU support preference.
+        :rtype: list[pathlib.Path]
+        """
         existing = self._existing_candidates(candidates)
         if not existing:
             return []
 
+        # Keep CPU-only builds as a fallback when no GPU-enabled binary exists.
         gpu_candidates: list[Path] = []
         cpu_candidates: list[Path] = []
         for candidate in existing:
@@ -175,6 +267,14 @@ class LlamaCppRunner:
         return gpu_candidates + cpu_candidates
 
     def _supports_any_flag(self, *flags: str) -> bool:
+        """Check whether the selected executable advertises any given CLI flag.
+
+        :param flags: One or more flags to search for in the help output.
+        :type flags: str
+        :returns: `True` when at least one flag is mentioned by the executable.
+        :rtype: bool
+        """
+        # Probe both common help switches because downstream packages do not always support both.
         for help_flag in ("--help", "-h"):
             try:
                 result = subprocess.run(
@@ -191,6 +291,13 @@ class LlamaCppRunner:
         return False
 
     def _detect_gpu_backends_for(self, cli_path: Path) -> set[str]:
+        """Detect available GPU backends near a `llama.cpp` executable.
+
+        :param cli_path: Executable path whose sibling libraries should be inspected.
+        :type cli_path: pathlib.Path
+        :returns: Detected backend names such as `cuda` or `vulkan`.
+        :rtype: set[str]
+        """
         patterns = {
             "cuda": ("libggml-cuda*", "ggml-cuda*.dll", "ggml-cuda*.dylib"),
             "vulkan": ("libggml-vulkan*", "ggml-vulkan*.dll", "ggml-vulkan*.dylib"),
@@ -212,6 +319,7 @@ class LlamaCppRunner:
             cli_path.parent.parent / "bin",
         }
 
+        # Scan nearby library locations because GPU builds often ship backend libraries next to the binary.
         detected: set[str] = set()
         for root in root_candidates:
             if not root.exists():
@@ -229,6 +337,11 @@ class LlamaCppRunner:
         return detected
 
     def _inspect_linked_ggml_libraries(self) -> tuple[set[str], list[str]]:
+        """Inspect Linux dynamic linkage for ggml backend libraries.
+
+        :returns: Detected linked backends and the raw ggml-related `ldd` lines.
+        :rtype: tuple[set[str], list[str]]
+        """
         if platform.system() != "Linux":
             return set(), []
 
@@ -264,6 +377,15 @@ class LlamaCppRunner:
         return linked_backends, lines
 
     def _verify_gpu_runtime_linkage(self, requested: str, device: str) -> None:
+        """Validate that GPU mode is backed by GPU-enabled ggml libraries on Linux.
+
+        :param requested: Raw device mode requested by the caller.
+        :type requested: str
+        :param device: Effective device mode chosen by the runner.
+        :type device: str
+        :raises SubmasterError: If GPU mode resolves to CPU-only shared libraries.
+        """
+        # Only Linux shared-library builds need this extra runtime validation.
         if requested != "gpu" or device != "gpu":
             return
         if platform.system() != "Linux":
@@ -285,6 +407,14 @@ class LlamaCppRunner:
         )
 
     def resolve_device(self, requested: str) -> str:
+        """Resolve the effective runtime device for translation.
+
+        :param requested: Requested device mode: `auto`, `cpu`, or `gpu`.
+        :type requested: str
+        :returns: Effective device mode after capability checks.
+        :rtype: str
+        :raises SubmasterError: If the requested mode is invalid.
+        """
         normalized = requested.lower()
         if normalized not in {"auto", "cpu", "gpu"}:
             raise SubmasterError("Device must be one of: auto, cpu, gpu.")
@@ -301,17 +431,37 @@ class LlamaCppRunner:
         return "gpu"
 
     def _estimated_max_tokens(self, prompt: str) -> int:
+        """Estimate a completion token budget from prompt size.
+
+        :param prompt: Prompt text that will be sent to `llama.cpp`.
+        :type prompt: str
+        :returns: Conservative maximum token count for the response.
+        :rtype: int
+        """
         prompt_chars = max(1, len(prompt))
         return max(256, min(2_048, int(prompt_chars / 2)))
 
     def _normalize_output(self, output: str) -> str:
+        """Normalize raw model output for downstream cue parsing.
+
+        :param output: Raw stdout emitted by `llama.cpp`.
+        :type output: str
+        :returns: Cleaned translation text with wrapper fences removed.
+        :rtype: str
+        """
         normalized = output.strip()
         if normalized.startswith("```"):
+            # Some models wrap responses in fenced blocks; remove the fence lines only.
             parts = normalized.split("```")
             normalized = "\n".join(part for part in parts if part.strip() and not part.strip().isidentifier())
         return normalized.strip()
 
     def _announce_mode_once(self, device: str) -> None:
+        """Emit the selected runtime mode at most once per device.
+
+        :param device: Effective device mode being used.
+        :type device: str
+        """
         if device in self._announced_modes:
             return
 
@@ -329,9 +479,24 @@ class LlamaCppRunner:
         requested_device: str,
         threads: int,
     ) -> str:
+        """Run a translation prompt through `llama.cpp`.
+
+        :param model_path: Translation model file to load.
+        :type model_path: pathlib.Path
+        :param prompt: Prompt text to send to the model.
+        :type prompt: str
+        :param requested_device: Requested device mode: `auto`, `cpu`, or `gpu`.
+        :type requested_device: str
+        :param threads: Number of CPU threads to use.
+        :type threads: int
+        :returns: Normalized text output from the model.
+        :rtype: str
+        :raises SubmasterError: If execution fails or produces no usable output.
+        """
         requested = requested_device.lower()
         device = self.resolve_device(requested_device)
 
+        # Warn when the requested mode cannot be honored because the discovered build is CPU-only.
         if requested in {"auto", "gpu"} and device == "cpu" and not self.gpu_backends and platform.system() != "Darwin":
             self.console.warn(
                 "GPU was requested or auto-selected, but this llama.cpp executable appears CPU-only. "
@@ -340,6 +505,7 @@ class LlamaCppRunner:
         elif requested == "gpu" and device == "cpu":
             self.console.warn("GPU was requested, but no usable GPU backend was detected. Falling back to CPU.")
 
+        # Build a deterministic command line so batch translation output stays machine-parseable.
         command = [
             str(self.cli_path),
             "-m",
@@ -362,6 +528,7 @@ class LlamaCppRunner:
             str(LLAMA_REPEAT_PENALTY),
         ]
 
+        # Enable optional quality-of-life flags only when the selected binary advertises them.
         if self.supports_simple_io:
             command.append("--simple-io")
         if self.supports_no_display_prompt:
@@ -378,6 +545,7 @@ class LlamaCppRunner:
         self._announce_mode_once(device)
         self._verify_gpu_runtime_linkage(requested, device)
 
+        # Keep the CLI responsive with a spinner while the subprocess performs inference.
         with self.console.spinner("Running subtitle translation batch.") as _spinner:
             result = subprocess.run(
                 command,
@@ -386,6 +554,7 @@ class LlamaCppRunner:
                 check=False,
             )
 
+        # Surface combined stdout and stderr when the subprocess fails.
         if result.returncode != 0:
             detail = "\n".join(
                 part.strip()
@@ -394,6 +563,7 @@ class LlamaCppRunner:
             )
             raise SubmasterError(detail or "llama.cpp translation failed.")
 
+        # Normalize the model output before cue parsing so fenced wrappers do not break the translator.
         normalized_output = self._normalize_output(result.stdout or "")
         if not normalized_output:
             raise SubmasterError("llama.cpp finished without producing translated text.")

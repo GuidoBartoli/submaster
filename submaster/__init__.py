@@ -1,4 +1,4 @@
-"""submaster package."""
+"""Top-level package for the `submaster` subtitle generation tool."""
 
 __all__ = ["__version__"]
 

@@ -7,7 +7,10 @@ from submaster.cli import build_parser, main, resolve_output_path
 
 
 class CliTests(unittest.TestCase):
+    """Exercise CLI parsing and high-level workflow orchestration."""
+
     def test_parser_accepts_optional_whisper_summary_flags(self) -> None:
+        """Verify that whisper summary flags parse as simple booleans."""
         parser = build_parser()
         args = parser.parse_args(
             [
@@ -21,6 +24,7 @@ class CliTests(unittest.TestCase):
         self.assertTrue(args.show_model_info)
 
     def test_parser_accepts_translation_flags(self) -> None:
+        """Verify that translation-related CLI options are accepted together."""
         parser = build_parser()
         args = parser.parse_args(
             [
@@ -39,10 +43,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.llama_cli, "./llama.cpp/build/bin/llama-cli")
 
     def test_main_rejects_audio_only_input(self) -> None:
+        """Verify that the CLI rejects media files without a video stream."""
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.wav"
             input_path.write_bytes(b"fake")
 
+            # Stub the external dependency and probe checks so the test can focus
+            # on the video-stream validation branch.
             with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
                 with patch("submaster.cli.has_video_stream", return_value=False):
                     exit_code = main([str(input_path)])
@@ -50,6 +57,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
 
     def test_resolve_output_path_accepts_windows_style_directory_separator(self) -> None:
+        """Verify that Windows-style trailing separators are treated as directories."""
         source_path = Path("/tmp/input.mp4")
 
         resolved = resolve_output_path(source_path, "subs\\")
@@ -57,6 +65,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(resolved, Path("subs") / "input.srt")
 
     def test_main_invokes_translation_when_requested(self) -> None:
+        """Verify that the translation pipeline runs when `--translate-to` is set."""
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.mp4"
             raw_srt_path = Path(tmpdir) / "generated.srt"
@@ -74,6 +83,7 @@ class CliTests(unittest.TestCase):
                 "1\r\n00:00:00,000 --> 00:00:01,000\r\nciao\r\n"
             )
 
+            # Patch all external work so the test exercises orchestration only.
             with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
                 with patch("submaster.cli.has_video_stream", return_value=True):
                     with patch("submaster.cli.create_work_dir", return_value=work_dir):

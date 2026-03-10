@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from .errors import SubmasterError
 
 
+# Match standard `HH:MM:SS,mmm` or `HH:MM:SS.mmm` SRT timestamps.
 TIMESTAMP_RE = re.compile(
     r"(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})[,.](?P<millis>\d{3})"
 )
@@ -13,12 +14,31 @@ TIMESTAMP_RE = re.compile(
 
 @dataclass(frozen=True)
 class Cue:
+    """Represent a single subtitle cue in milliseconds and rendered text.
+
+    :param start_ms: Cue start timestamp in milliseconds.
+    :type start_ms: int
+    :param end_ms: Cue end timestamp in milliseconds.
+    :type end_ms: int
+    :param text: Cue text split into individual subtitle lines.
+    :type text: list[str]
+    """
+
     start_ms: int
     end_ms: int
     text: list[str]
 
 
 def _timestamp_to_ms(raw: str) -> int:
+    """Convert an SRT timestamp string into milliseconds.
+
+    :param raw: Raw timestamp string from an SRT timing line.
+    :type raw: str
+    :returns: Parsed timestamp in milliseconds.
+    :rtype: int
+    :raises SubmasterError: If the timestamp does not match the expected format.
+    """
+    # Reject malformed timestamps early so downstream cue parsing stays simple.
     match = TIMESTAMP_RE.fullmatch(raw.strip())
     if not match:
         raise SubmasterError(f"Invalid SRT timestamp: '{raw}'.")
@@ -32,6 +52,15 @@ def _timestamp_to_ms(raw: str) -> int:
 
 
 def format_timestamp(milliseconds: int) -> str:
+    """Format a millisecond timestamp using canonical SRT syntax.
+
+    :param milliseconds: Timestamp value to format.
+    :type milliseconds: int
+    :returns: Timestamp rendered as `HH:MM:SS,mmm`.
+    :rtype: str
+    :raises SubmasterError: If a negative timestamp is provided.
+    """
+    # SRT does not allow negative cue boundaries.
     if milliseconds < 0:
         raise SubmasterError("Negative timestamps are not valid in SRT.")
     hours, remainder = divmod(milliseconds, 3_600_000)
@@ -41,12 +70,23 @@ def format_timestamp(milliseconds: int) -> str:
 
 
 def parse_srt(raw_srt: str) -> list[Cue]:
+    """Parse raw SRT text into structured subtitle cues.
+
+    :param raw_srt: Raw subtitle file contents.
+    :type raw_srt: str
+    :returns: Parsed subtitle cues in source order.
+    :rtype: list[Cue]
+    :raises SubmasterError: If the input is empty or contains malformed cues.
+    """
+    # Normalize line endings before splitting into cue blocks so Windows and Unix files parse identically.
     normalized = raw_srt.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized:
         raise SubmasterError("Generated SRT file is empty.")
 
     cues: list[Cue] = []
     blocks = re.split(r"\n\s*\n", normalized)
+
+    # Parse each block independently so numbering, timing, and text validation stay local.
     for block in blocks:
         lines = [line.strip() for line in block.split("\n") if line.strip()]
         if not lines:
@@ -67,12 +107,20 @@ def parse_srt(raw_srt: str) -> list[Cue]:
             raise SubmasterError("Cue text is missing.")
         cues.append(Cue(start_ms=start_ms, end_ms=end_ms, text=text))
 
+    # Reject an all-empty parse result to surface bad generator output clearly.
     if not cues:
         raise SubmasterError("No subtitle cues were parsed from the generated SRT file.")
     return cues
 
 
 def render_srt(cues: list[Cue]) -> str:
+    """Render structured cues back into canonical SRT text.
+
+    :param cues: Subtitle cues to render.
+    :type cues: list[Cue]
+    :returns: Normalized SRT text with CRLF line endings.
+    :rtype: str
+    """
     blocks: list[str] = []
     for index, cue in enumerate(cues, start=1):
         # Rebuild every cue so numbering, timestamp separators, and line endings stay consistent.
@@ -86,4 +134,12 @@ def render_srt(cues: list[Cue]) -> str:
 
 
 def normalize_srt(raw_srt: str) -> str:
+    """Parse and re-render SRT text into the project's canonical format.
+
+    :param raw_srt: Raw subtitle file contents to normalize.
+    :type raw_srt: str
+    :returns: Canonically formatted SRT text.
+    :rtype: str
+    :raises SubmasterError: If the input cannot be parsed as valid SRT.
+    """
     return render_srt(parse_srt(raw_srt))

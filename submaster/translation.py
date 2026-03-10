@@ -19,11 +19,28 @@ _BATCH_CUE_RE = re.compile(
 
 @dataclass(frozen=True)
 class TranslationLanguage:
+    """Represent a normalized translation language target or source.
+
+    :param code: Language code passed to prompts and internal checks.
+    :type code: str
+    :param name: Human-readable language label used in logs and prompts.
+    :type name: str
+    """
+
     code: str
     name: str
 
 
 def resolve_translation_language(raw_language: str) -> TranslationLanguage:
+    """Normalize a user-provided translation language value.
+
+    :param raw_language: Raw language code or name supplied by the user.
+    :type raw_language: str
+    :returns: Normalized translation language metadata.
+    :rtype: TranslationLanguage
+    :raises SubmasterError: If the input is empty after normalization.
+    """
+    # Accept either explicit language codes or common English aliases.
     normalized = raw_language.strip().lower()
     if not normalized:
         raise SubmasterError("Translation target language cannot be empty.")
@@ -80,6 +97,13 @@ def resolve_translation_language(raw_language: str) -> TranslationLanguage:
 
 
 def _looks_like_chinese(language: TranslationLanguage | None) -> bool:
+    """Check whether a language should use the Chinese prompt template.
+
+    :param language: Language metadata to inspect.
+    :type language: TranslationLanguage | None
+    :returns: `True` when Chinese-specific prompting should be used.
+    :rtype: bool
+    """
     if language is None:
         return False
     normalized = language.code.lower()
@@ -87,6 +111,8 @@ def _looks_like_chinese(language: TranslationLanguage | None) -> bool:
 
 
 class SubtitleTranslator:
+    """Translate subtitle cues through a llama.cpp-compatible runner."""
+
     def __init__(
         self,
         console: Console,
@@ -99,6 +125,27 @@ class SubtitleTranslator:
         max_batch_cues: int = LLAMA_MAX_BATCH_CUES,
         max_batch_chars: int = LLAMA_MAX_BATCH_CHARS,
     ) -> None:
+        """Configure the subtitle translator for one target language.
+
+        :param console: Console used for progress and warning output.
+        :type console: Console
+        :param runner: Runner object exposing `run_prompt` for llama.cpp inference.
+        :type runner: object
+        :param model_path: Translation model path used by the runner.
+        :type model_path: pathlib.Path
+        :param target_language: Requested translation target code or name.
+        :type target_language: str
+        :param source_language: Optional source language hint, or `auto`.
+        :type source_language: str
+        :param requested_device: Preferred runtime device selection.
+        :type requested_device: str
+        :param threads: Number of CPU threads to pass to the runner.
+        :type threads: int
+        :param max_batch_cues: Maximum subtitle cues per translation batch.
+        :type max_batch_cues: int
+        :param max_batch_chars: Maximum approximate characters per translation batch.
+        :type max_batch_chars: int
+        """
         self.console = console
         self.runner = runner
         self.model_path = model_path
@@ -112,14 +159,31 @@ class SubtitleTranslator:
         self.max_batch_chars = max(256, max_batch_chars)
 
     def translate_srt(self, raw_srt: str) -> str:
+        """Translate an entire SRT document and return normalized SRT text.
+
+        :param raw_srt: Raw subtitle text to translate.
+        :type raw_srt: str
+        :returns: Translated subtitle text in canonical SRT format.
+        :rtype: str
+        :raises SubmasterError: If the SRT cannot be parsed or translation fails.
+        """
         cues = parse_srt(raw_srt)
         translated_cues = self.translate_cues(cues)
         return render_srt(translated_cues)
 
     def translate_cues(self, cues: list[Cue]) -> list[Cue]:
+        """Translate a list of subtitle cues while preserving cue timings.
+
+        :param cues: Subtitle cues to translate.
+        :type cues: list[Cue]
+        :returns: Translated cues with original timing metadata.
+        :rtype: list[Cue]
+        :raises SubmasterError: If no cues are provided or translation fails.
+        """
         if not cues:
             raise SubmasterError("No subtitle cues were provided for translation.")
 
+        # Report translation progress at cue granularity even though work runs in batches.
         self.console.note(
             f"Translating subtitles to {self.target_language.name} with Tencent HY-MT."
         )
@@ -135,10 +199,18 @@ class SubtitleTranslator:
         return translated
 
     def _batch_cues(self, cues: list[Cue]) -> list[list[Cue]]:
+        """Split subtitle cues into model-friendly translation batches.
+
+        :param cues: Subtitle cues to batch.
+        :type cues: list[Cue]
+        :returns: Ordered cue batches constrained by size limits.
+        :rtype: list[list[Cue]]
+        """
         batches: list[list[Cue]] = []
         current_batch: list[Cue] = []
         current_chars = 0
 
+        # Start a new batch whenever either the cue count or character limit would overflow.
         for cue in cues:
             cue_chars = len("\n".join(cue.text))
             if current_batch and (
@@ -157,6 +229,15 @@ class SubtitleTranslator:
         return batches
 
     def _translate_batch(self, batch: list[Cue]) -> list[Cue]:
+        """Translate one cue batch and preserve cue order.
+
+        :param batch: Cue batch to translate in a single prompt.
+        :type batch: list[Cue]
+        :returns: Translated cues for the batch.
+        :rtype: list[Cue]
+        :raises SubmasterError: If fallback single-cue translation also fails.
+        """
+        # Try the efficient batched prompt first and only fall back when cue markup is corrupted.
         prompt = self._build_batch_prompt(batch)
         translated_text = self.runner.run_prompt(
             model_path=self.model_path,
@@ -172,6 +253,7 @@ class SubtitleTranslator:
             )
             return [self._translate_single_cue(cue) for cue in batch]
 
+        # Rebuild the batch cue-by-cue so timings stay attached to the original entries.
         translated_batch: list[Cue] = []
         for index, cue in enumerate(batch, start=1):
             translated_lines = self._split_translated_lines(parsed_text_by_id[index])
@@ -181,6 +263,14 @@ class SubtitleTranslator:
         return translated_batch
 
     def _translate_single_cue(self, cue: Cue) -> Cue:
+        """Translate a single cue as a recovery path for failed batch parsing.
+
+        :param cue: Cue to translate.
+        :type cue: Cue
+        :returns: Translated cue preserving the original timing.
+        :rtype: Cue
+        :raises SubmasterError: If the single-cue response still cannot be parsed.
+        """
         prompt = self._build_batch_prompt([cue])
         translated_text = self.runner.run_prompt(
             model_path=self.model_path,
@@ -199,13 +289,23 @@ class SubtitleTranslator:
         return Cue(start_ms=cue.start_ms, end_ms=cue.end_ms, text=translated_lines)
 
     def _build_batch_prompt(self, batch: list[Cue]) -> str:
+        """Build a structured prompt for one translation batch.
+
+        :param batch: Cue batch to encode into the prompt.
+        :type batch: list[Cue]
+        :returns: Prompt text containing instructions and tagged cue payloads.
+        :rtype: str
+        """
         target_name = self.target_language.name
         payload_blocks: list[str] = []
+
+        # Wrap each cue in explicit tags so the response can be parsed deterministically.
         for index, cue in enumerate(batch, start=1):
             cue_text = "\n".join(line.strip() for line in cue.text if line.strip())
             payload_blocks.append(f"[[[cue:{index}]]]\n{cue_text}\n[[[/cue]]]")
         payload = "\n\n".join(payload_blocks)
 
+        # Use a Chinese instruction template when either side of the translation looks Chinese.
         if _looks_like_chinese(self.target_language) or _looks_like_chinese(self.source_language):
             instructions = (
                 f"请将以下字幕翻译成{target_name}。\n"
@@ -227,6 +327,16 @@ class SubtitleTranslator:
         return f"{instructions}\n{payload}\n"
 
     def _parse_batch_output(self, raw_output: str, batch: list[Cue]) -> dict[int, str] | None:
+        """Parse a tagged batch response into cue-id keyed text.
+
+        :param raw_output: Raw translation model output.
+        :type raw_output: str
+        :param batch: Original cue batch used to validate the response shape.
+        :type batch: list[Cue]
+        :returns: Mapping from cue id to translated text, or `None` when invalid.
+        :rtype: dict[int, str] | None
+        """
+        # Reject responses that lose tags, duplicate ids, or omit expected cues.
         matches = list(_BATCH_CUE_RE.finditer(raw_output))
         if len(matches) != len(batch):
             return None
@@ -245,6 +355,14 @@ class SubtitleTranslator:
         return translated_by_id
 
     def _split_translated_lines(self, raw_text: str) -> list[str]:
+        """Normalize translated cue text into subtitle line fragments.
+
+        :param raw_text: Raw translated cue body.
+        :type raw_text: str
+        :returns: Cleaned subtitle lines with empty lines removed.
+        :rtype: list[str]
+        """
+        # Preserve at least one line even when the model returns only whitespace.
         lines = [line.rstrip() for line in raw_text.replace("\r\n", "\n").split("\n")]
         cleaned = [line for line in lines if line.strip()]
         return cleaned or [raw_text.strip() or ""]
