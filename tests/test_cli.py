@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from submaster.cli import build_parser, main, resolve_output_path
@@ -112,6 +113,21 @@ class CliTests(unittest.TestCase):
                 "1\n00:00:00,000 --> 00:00:01,000\nciao\n",
             )
             translator_instance.translate_srt.assert_called_once()
+
+    def test_main_dismisses_active_progress_before_keyboard_interrupt_error(self) -> None:
+        """Verify cancelled runs clear the progress bar before printing the error."""
+        events: list[str] = []
+        console = SimpleNamespace(
+            dismiss_progress=lambda: events.append("dismiss"),
+            error=lambda message: events.append(f"error:{message}"),
+        )
+
+        with patch("submaster.cli.Console", return_value=console):
+            with patch("submaster.cli.ensure_runtime_dependencies", side_effect=KeyboardInterrupt):
+                exit_code = main(["input.mp4"])
+
+        self.assertEqual(exit_code, 130)
+        self.assertEqual(events, ["dismiss", "error:Operation cancelled by user."])
 
 
 if __name__ == "__main__":

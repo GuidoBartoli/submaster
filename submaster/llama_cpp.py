@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
+import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 
 from .config import (
@@ -18,6 +21,11 @@ from .config import (
 )
 from .console import Console
 from .errors import SubmasterError
+
+_PROMPT_CUE_RE = re.compile(
+    r"\[\[\[cue:(?P<id>\d+)\]\]\]\s*(?P<text>.*?)\s*\[\[\[/cue\]\]\]",
+    re.DOTALL,
+)
 
 
 class LlamaCppRunner:
@@ -38,7 +46,10 @@ class LlamaCppRunner:
         self.supports_ngl_flag = self._supports_any_flag("-ngl", "--n-gpu-layers")
         self.supports_simple_io = self._supports_any_flag("--simple-io")
         self.supports_no_display_prompt = self._supports_any_flag("--no-display-prompt")
+        self.supports_conversation = self._supports_any_flag("-cnv", "--conversation")
+        self.supports_no_conversation = self._supports_any_flag("-no-cnv", "--no-conversation")
         self.supports_no_warmup = self._supports_any_flag("--no-warmup")
+        self.supports_single_turn = self._supports_any_flag("--single-turn")
         self.gpu_backends = self._detect_gpu_backends_for(self.cli_path)
         self._announced_modes: set[str] = set()
 
@@ -96,7 +107,38 @@ class LlamaCppRunner:
         :returns: Command names accepted for PATH discovery.
         :rtype: tuple[str, ...]
         """
-        return ("llama-cli", "main")
+        return ("llama-completion", "llama-cli", "main")
+
+    def _completion_sibling_for(self, candidate: Path) -> Path | None:
+        """Return a sibling `llama-completion` executable when present.
+
+        :param candidate: Candidate executable path selected for translation.
+        :type candidate: pathlib.Path
+        :returns: Sibling completion executable, or `None` when unavailable.
+        :rtype: pathlib.Path | None
+        """
+        normalized_name = candidate.name.lower()
+        if "llama-completion" in normalized_name:
+            return candidate
+        if normalized_name not in {"llama-cli", "llama-cli.exe", "main", "main.exe"}:
+            return None
+
+        sibling_name = "llama-completion.exe" if candidate.suffix.lower() == ".exe" else "llama-completion"
+        sibling = candidate.with_name(sibling_name)
+        if self._is_executable_file(sibling):
+            return sibling
+        return None
+
+    def _prefer_completion_binary(self, candidate: Path) -> Path:
+        """Prefer the dedicated completion binary for prompt-based translation.
+
+        :param candidate: Candidate executable path.
+        :type candidate: pathlib.Path
+        :returns: Completion-capable executable path.
+        :rtype: pathlib.Path
+        """
+        completion_sibling = self._completion_sibling_for(candidate)
+        return completion_sibling or candidate
 
     def _local_command_names(self) -> tuple[str, ...]:
         """Return executable names to search in local build directories.
@@ -207,12 +249,12 @@ class LlamaCppRunner:
         # Respect explicit paths as long as they resolve to a runnable executable.
         for candidate in self._existing_candidates(explicit_candidates):
             if candidate and self._is_executable_file(candidate):
-                return candidate.resolve()
+                return self._prefer_completion_binary(candidate).resolve()
 
         # Prefer GPU-capable builds when discovery finds multiple executables.
         ranked_discovered = self._rank_candidates_by_gpu(discovered_candidates)
         if ranked_discovered:
-            return ranked_discovered[0].resolve()
+            return self._prefer_completion_binary(ranked_discovered[0]).resolve()
 
         searched_text = "\n".join(f"  - {item}" for item in searched if item)
         raise SubmasterError(
@@ -438,8 +480,15 @@ class LlamaCppRunner:
         :returns: Conservative maximum token count for the response.
         :rtype: int
         """
+        matches = list(_PROMPT_CUE_RE.finditer(prompt))
+        if matches:
+            source_chars = sum(len(match.group("text").strip()) for match in matches)
+            # Translation output often matches source length and must repeat cue markers.
+            token_budget = source_chars + (len(matches) * 32)
+            return max(256, min(1_536, token_budget))
+
         prompt_chars = max(1, len(prompt))
-        return max(256, min(2_048, int(prompt_chars / 2)))
+        return max(256, min(768, int(prompt_chars / 2)))
 
     def _normalize_output(self, output: str) -> str:
         """Normalize raw model output for downstream cue parsing.
@@ -450,6 +499,7 @@ class LlamaCppRunner:
         :rtype: str
         """
         normalized = output.strip()
+        normalized = normalized.replace("[end of text]", "").strip()
         if normalized.startswith("```"):
             # Some models wrap responses in fenced blocks; remove the fence lines only.
             parts = normalized.split("```")
@@ -478,6 +528,8 @@ class LlamaCppRunner:
         prompt: str,
         requested_device: str,
         threads: int,
+        system_prompt: str | None = None,
+        show_spinner: bool = True,
     ) -> str:
         """Run a translation prompt through `llama.cpp`.
 
@@ -510,8 +562,6 @@ class LlamaCppRunner:
             str(self.cli_path),
             "-m",
             str(model_path),
-            "-p",
-            prompt,
             "-n",
             str(self._estimated_max_tokens(prompt)),
             "-c",
@@ -528,13 +578,32 @@ class LlamaCppRunner:
             str(LLAMA_REPEAT_PENALTY),
         ]
 
+        use_chat_turn = bool(system_prompt and self.supports_conversation and self.supports_single_turn)
+        if use_chat_turn:
+            command.extend(
+                [
+                    "--conversation",
+                    "--single-turn",
+                    "--system-prompt",
+                    system_prompt,
+                    "-p",
+                    prompt,
+                ]
+            )
+        else:
+            command.extend(["-p", prompt])
+
         # Enable optional quality-of-life flags only when the selected binary advertises them.
         if self.supports_simple_io:
             command.append("--simple-io")
         if self.supports_no_display_prompt:
             command.append("--no-display-prompt")
+        if not use_chat_turn and self.supports_no_conversation:
+            command.append("--no-conversation")
         if self.supports_no_warmup:
             command.append("--no-warmup")
+        if not use_chat_turn and not self.supports_no_conversation and self.supports_single_turn:
+            command.append("--single-turn")
 
         if self.supports_ngl_flag:
             gpu_layers = LLAMA_N_GPU_LAYERS_ALL if device == "gpu" else LLAMA_N_GPU_LAYERS_CPU
@@ -545,26 +614,33 @@ class LlamaCppRunner:
         self._announce_mode_once(device)
         self._verify_gpu_runtime_linkage(requested, device)
 
-        # Keep the CLI responsive with a spinner while the subprocess performs inference.
-        with self.console.spinner("Running subtitle translation batch.") as _spinner:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+        spinner_context = self.console.spinner("Running subtitle translation batch.") if show_spinner else nullcontext()
+        with spinner_context:
+            with tempfile.SpooledTemporaryFile(max_size=1_048_576) as stdout_file:
+                with tempfile.SpooledTemporaryFile(max_size=1_048_576) as stderr_file:
+                    result = subprocess.run(
+                        command,
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                        stdin=subprocess.DEVNULL,
+                        check=False,
+                    )
+                    stdout_file.seek(0)
+                    stderr_file.seek(0)
+                    stdout_text = stdout_file.read().decode("utf-8", errors="replace")
+                    stderr_text = stderr_file.read().decode("utf-8", errors="replace")
 
         # Surface combined stdout and stderr when the subprocess fails.
         if result.returncode != 0:
             detail = "\n".join(
                 part.strip()
-                for part in (result.stdout or "", result.stderr or "")
+                for part in (stdout_text, stderr_text)
                 if part and part.strip()
             )
             raise SubmasterError(detail or "llama.cpp translation failed.")
 
         # Normalize the model output before cue parsing so fenced wrappers do not break the translator.
-        normalized_output = self._normalize_output(result.stdout or "")
+        normalized_output = self._normalize_output(stdout_text)
         if not normalized_output:
             raise SubmasterError("llama.cpp finished without producing translated text.")
         return normalized_output

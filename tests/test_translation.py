@@ -9,7 +9,13 @@ from submaster.translation import SubtitleTranslator, resolve_translation_langua
 class DummyRunner:
     """Minimal runner stub that returns scripted translation responses."""
 
-    def __init__(self, responses: list[str]) -> None:
+    def __init__(
+        self,
+        responses: list[str],
+        *,
+        supports_conversation: bool = False,
+        supports_single_turn: bool = False,
+    ) -> None:
         """Store queued responses and capture prompts for assertions.
 
         :param responses: Translation outputs to return on successive calls.
@@ -17,8 +23,19 @@ class DummyRunner:
         """
         self.responses = responses
         self.prompts: list[str] = []
+        self.system_prompts: list[str | None] = []
+        self.supports_conversation = supports_conversation
+        self.supports_single_turn = supports_single_turn
 
-    def run_prompt(self, model_path: Path, prompt: str, requested_device: str, threads: int) -> str:
+    def run_prompt(
+        self,
+        model_path: Path,
+        prompt: str,
+        requested_device: str,
+        threads: int,
+        system_prompt: str | None = None,
+        show_spinner: bool = True,
+    ) -> str:
         """Return the next scripted response and remember the incoming prompt.
 
         :param model_path: Model path provided by the translator.
@@ -29,10 +46,15 @@ class DummyRunner:
         :type requested_device: str
         :param threads: Thread count for the call.
         :type threads: int
+        :param system_prompt: Optional system prompt used by chat-style runtimes.
+        :type system_prompt: str | None
+        :param show_spinner: Whether the caller requested spinner output.
+        :type show_spinner: bool
         :returns: Next scripted translation response.
         :rtype: str
         """
         self.prompts.append(prompt)
+        self.system_prompts.append(system_prompt)
         if not self.responses:
             raise AssertionError("No dummy translation responses left.")
         return self.responses.pop(0)
@@ -142,8 +164,124 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(translated[1].text, ["arrivederci"])
         self.assertEqual(len(runner.prompts), 3)
 
-    def test_build_batch_prompt_uses_source_language_hint(self) -> None:
-        """Verify that prompts include the normalized source-language hint."""
+    def test_translate_cues_emits_fallback_warning_only_once_per_run(self) -> None:
+        """Verify repeated batch parse failures do not spam the same warning."""
+        warnings: list[str] = []
+
+        class DummyProgress:
+            """No-op progress helper used by translation tests."""
+
+            def update(self, _completed: float, extra: str = "") -> None:
+                return None
+
+            def finish(self, _completed: float | None = None, extra: str = "") -> None:
+                return None
+
+        console = SimpleNamespace(
+            note=lambda message: None,
+            warn=warnings.append,
+            progress=lambda label, total, unit="": DummyProgress(),
+        )
+        runner = DummyRunner(
+            [
+                "not parseable batch one",
+                "[[[cue:1]]]\nciao\n[[[/cue]]]",
+                "[[[cue:1]]]\narrivederci\n[[[/cue]]]",
+                "not parseable batch two",
+                "[[[cue:1]]]\ngrazie\n[[[/cue]]]",
+                "[[[cue:1]]]\nprego\n[[[/cue]]]",
+            ]
+        )
+        translator = SubtitleTranslator(
+            console=console,
+            runner=runner,
+            model_path=Path("/tmp/HY-MT1.5-1.8B-Q4_K_M.gguf"),
+            target_language="it",
+            source_language="en",
+            requested_device="cpu",
+            threads=2,
+        )
+
+        translated = translator.translate_cues(
+            [
+                Cue(start_ms=0, end_ms=1_000, text=["hello"]),
+                Cue(start_ms=1_000, end_ms=2_000, text=["goodbye"]),
+                Cue(start_ms=2_000, end_ms=3_000, text=["thanks"]),
+                Cue(start_ms=3_000, end_ms=4_000, text=["you are welcome"]),
+            ]
+        )
+
+        self.assertEqual([cue.text for cue in translated], [["ciao"], ["arrivederci"], ["grazie"], ["prego"]])
+        self.assertEqual(
+            warnings,
+            [
+                "Some translation batch responses could not be parsed cleanly. "
+                "Retrying failed batches one cue at a time."
+            ],
+        )
+
+    def test_small_model_uses_more_conservative_default_batch_size(self) -> None:
+        """Verify that the default batch cap is lowered for the 1.8B translation model."""
+        runner = DummyRunner([])
+        translator = SubtitleTranslator(
+            console=self._console(),
+            runner=runner,
+            model_path=Path("/tmp/HY-MT1.5-1.8B-Q4_K_M.gguf"),
+            target_language="it",
+            source_language="en",
+            requested_device="cpu",
+            threads=2,
+        )
+
+        self.assertEqual(translator.max_batch_cues, 2)
+
+    def test_translate_single_cue_accepts_missing_closing_marker(self) -> None:
+        """Verify that single-cue recovery accepts outputs missing the closing tag."""
+        runner = DummyRunner(["[[[cue:1]]]\nciao"])
+        translator = SubtitleTranslator(
+            console=self._console(),
+            runner=runner,
+            model_path=Path("/tmp/HY-MT1.5-1.8B-Q4_K_M.gguf"),
+            target_language="it",
+            source_language="en",
+            requested_device="cpu",
+            threads=2,
+        )
+
+        translated = translator._translate_single_cue(
+            Cue(start_ms=0, end_ms=1_000, text=["hello"])
+        )
+
+        self.assertEqual(translated.text, ["ciao"])
+
+    def test_build_model_prompt_uses_system_prompt_for_chat_runners(self) -> None:
+        """Verify that chat-capable runners receive instructions via system prompt."""
+        runner = DummyRunner(
+            ["[[[cue:1]]]\nciao\n[[[/cue]]]"],
+            supports_conversation=True,
+            supports_single_turn=True,
+        )
+        translator = SubtitleTranslator(
+            console=self._console(),
+            runner=runner,
+            model_path=Path("/tmp/HY-MT1.5-1.8B-Q4_K_M.gguf"),
+            target_language="it",
+            source_language="en",
+            requested_device="cpu",
+            threads=2,
+        )
+
+        payload, system_prompt = translator._build_model_prompt(
+            [Cue(start_ms=0, end_ms=1_000, text=["hello"])]
+        )
+
+        self.assertEqual(payload, "[[[cue:1]]]\nhello\n[[[/cue]]]\n")
+        self.assertIsNotNone(system_prompt)
+        self.assertIn("Translate the user's subtitle cues into Italian.", system_prompt)
+        self.assertIn("Source language: English.", system_prompt)
+
+    def test_build_model_prompt_inlines_instructions_without_chat_support(self) -> None:
+        """Verify that non-chat runners keep instructions inside the prompt payload."""
         runner = DummyRunner(["[[[cue:1]]]\nciao\n[[[/cue]]]"])
         translator = SubtitleTranslator(
             console=self._console(),
@@ -155,8 +293,11 @@ class TranslationTests(unittest.TestCase):
             threads=2,
         )
 
-        prompt = translator._build_batch_prompt([Cue(start_ms=0, end_ms=1_000, text=["hello"])])
+        prompt, system_prompt = translator._build_model_prompt(
+            [Cue(start_ms=0, end_ms=1_000, text=["hello"])]
+        )
 
+        self.assertIsNone(system_prompt)
         self.assertIn("Translate the following subtitles into Italian.", prompt)
         self.assertIn("Source language: English.", prompt)
         self.assertIn("[[[cue:1]]]", prompt)

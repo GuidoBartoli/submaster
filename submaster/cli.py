@@ -221,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # Surface a short execution summary before starting media inspection
         # and model loading.
-        console.banner("Submaster", f"{input_path.name} -> {output_path.name}")
+        console.banner(">>> Submaster <<<", f"'{input_path.name}' -> '{output_path.name}'")
         if not has_video_stream(input_path):
             raise SubmasterError(
                 "Input must contain a video stream."
@@ -299,11 +299,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except KeyboardInterrupt:
         # Map user cancellation to the conventional shell exit code.
+        console.dismiss_progress()
         console.error("Operation cancelled by user.")
         return 130
     except SubmasterError as exc:
         # Convert expected CLI failures into a clean user message and a
         # non-zero exit status.
+        console.dismiss_progress()
         console.error(str(exc))
         return 1
     finally:

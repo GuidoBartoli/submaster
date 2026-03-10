@@ -190,7 +190,9 @@ If you choose not to use Conda, install `ffmpeg`, `git`, `cmake`, and `ninja` fi
 - macOS with Homebrew: `brew install ffmpeg git cmake ninja`
 - Windows: install the same tools with `winget`, Chocolatey, Scoop, or another local package manager, then build `whisper.cpp` and `llama.cpp` as shown above
 
-### GPU builds (CUDA example)
+### GPU builds
+
+#### CUDA 
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp.git
@@ -198,7 +200,7 @@ cmake -S llama.cpp -B llama.cpp/build -G Ninja -DGGML_CUDA=ON -DBUILD_SHARED_LIB
 cmake --build llama.cpp/build -j --config Release
 ```
 
-For Vulkan:
+#### Vulkan
 
 ```bash
 cmake -S llama.cpp -B llama.cpp/build -G Ninja -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF
@@ -206,19 +208,6 @@ cmake --build llama.cpp/build -j --config Release
 ```
 
 On macOS, `whisper.cpp` and `llama.cpp` typically use Metal when the selected build includes it. On Windows, `submaster` auto-detects common local `.exe` build outputs and nearby GPU backend DLLs. If you keep multiple builds around, pass `--whisper-cli` and `--llama-cli` explicitly.
-
-## Linux Runtime Linkage Check
-
-When `--device gpu` is requested on Linux, `submaster` performs an extra runtime check with `ldd` for both `whisper.cpp` and `llama.cpp`. If the selected executable is dynamically linked against CPU-only `ggml` libraries, `submaster` stops with an explicit error instead of silently running on the CPU.
-
-Useful Linux checks:
-
-```bash
-ldd "$(which whisper-cli)" | grep ggml
-ldd "$(which llama-cli)" | grep ggml
-```
-
-If startup logs contain messages such as `no GPU found`, the current executable is not using your GPU.
 
 ## Usage
 

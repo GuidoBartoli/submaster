@@ -13,6 +13,7 @@ DIM = "\033[2m"
 BOLD = "\033[1m"
 BLUE = "\033[38;5;39m"
 CYAN = "\033[38;5;44m"
+ORANGE = "\033[38;5;208m"
 GREEN = "\033[38;5;42m"
 YELLOW = "\033[38;5;220m"
 RED = "\033[38;5;196m"
@@ -135,6 +136,7 @@ class Console:
         self.color = _supports_color()
         self.stream = sys.stderr
         self._lock = threading.Lock()
+        self._active_progress: ProgressBar | None = None
 
     def _write(self, message: str) -> None:
         """Write raw text to the console stream in a thread-safe way.
@@ -153,6 +155,12 @@ class Console:
         :param message: Message content to print.
         :type message: str
         """
+        active_progress = self._active_progress
+        if active_progress is not None and not active_progress._closed:
+            active_progress._clear_current_line()
+            self._write(f"{message}\n")
+            active_progress._render_current_state()
+            return
         self._write(f"{message}\n")
 
     def banner(self, title: str, detail: str | None = None) -> None:
@@ -208,7 +216,23 @@ class Console:
         """
         self.line(f"{_style(self.color, RED, '[ERR!]')} {message}")
 
-    def progress(self, label: str, total: float | None, unit: str = "") -> "ProgressBar":
+    def dismiss_progress(self) -> None:
+        """Clear any active progress line without redrawing it."""
+        active_progress = self._active_progress
+        if active_progress is None:
+            return
+        if not active_progress._closed:
+            active_progress._clear_current_line()
+            active_progress._closed = True
+        self._active_progress = None
+
+    def progress(
+        self,
+        label: str,
+        total: float | None,
+        unit: str = "",
+        show_value: bool = True,
+    ) -> "ProgressBar":
         """Create a progress bar bound to this console.
 
         :param label: Short progress label shown in the prefix.
@@ -217,10 +241,14 @@ class Console:
         :type total: float | None
         :param unit: Optional unit suffix shown next to numeric values.
         :type unit: str
+        :param show_value: Whether to show the raw completed/total value suffix.
+        :type show_value: bool
         :returns: Progress bar instance connected to this console.
         :rtype: ProgressBar
         """
-        return ProgressBar(self, label=label, total=total, unit=unit)
+        return ProgressBar(
+            self, label=label, total=total, unit=unit, show_value=show_value
+        )
 
     def spinner(self, label: str) -> "Spinner":
         """Create a spinner context manager bound to this console.
@@ -251,6 +279,7 @@ class ProgressBar:
     label: str
     total: float | None
     unit: str = ""
+    show_value: bool = True
 
     def __post_init__(self) -> None:
         """Initialize internal state and render the initial progress line."""
@@ -258,8 +287,11 @@ class ProgressBar:
         self._start = time.monotonic()
         self._last_render = 0.0
         self._closed = False
+        self._completed = 0.0
+        self._extra = ""
         self._last_line_length = 0
         self._width = max(20, min(40, shutil.get_terminal_size((100, 20)).columns - 48))
+        self.console._active_progress = self
         self._render(0.0, "")
 
     def update(self, completed: float, extra: str = "") -> None:
@@ -272,6 +304,8 @@ class ProgressBar:
         """
         if self._closed:
             return
+        self._completed = completed
+        self._extra = extra
         now = time.monotonic()
         # Throttle intermediate updates so fast producers do not flood the terminal.
         if now - self._last_render < 0.05 and self.total and completed < self.total:
@@ -289,8 +323,12 @@ class ProgressBar:
         if self._closed:
             return
         final_value = self.total if completed is None and self.total is not None else completed or 0.0
+        self._completed = final_value
+        self._extra = extra
         self._render(final_value, extra, final=True)
         self._closed = True
+        if self.console._active_progress is self:
+            self.console._active_progress = None
         self.console._write("\n")
 
     def _render(self, completed: float, extra: str, final: bool = False) -> None:
@@ -304,14 +342,22 @@ class ProgressBar:
         :type final: bool
         """
         total = self.total
-        elapsed = format_seconds(time.monotonic() - self._start)
+        elapsed_seconds = time.monotonic() - self._start
+        elapsed = format_seconds(elapsed_seconds)
         if total and total > 0:
             # Determinate progress renders a proportional bar and percentage.
             ratio = max(0.0, min(1.0, completed / total))
             filled = int(ratio * self._width)
             bar = "#" * filled + "-" * (self._width - filled)
             percent = f"{ratio * 100:6.2f}%"
-            current_label = f"{completed:,.1f}/{total:,.1f}{self.unit}"
+            current_label = (
+                f"{completed:,.1f}/{total:,.1f}{self.unit}" if self.show_value else ""
+            )
+            eta = ""
+            if 0 < completed < total and elapsed_seconds > 0:
+                rate = completed / elapsed_seconds
+                if rate > 0:
+                    eta = f" ETA {format_seconds((total - completed) / rate)}"
         else:
             # Indeterminate progress renders a moving pulse instead of a percentage.
             pulse = int((time.monotonic() * 8) % self._width)
@@ -319,12 +365,18 @@ class ProgressBar:
             bar_chars[pulse] = "#"
             bar = "".join(bar_chars)
             percent = "   -- "
-            current_label = f"{completed:,.1f}{self.unit}"
+            current_label = f"{completed:,.1f}{self.unit}" if self.show_value else ""
+            eta = ""
 
-        prefix = _style(self.console.color, CYAN, f"[{self.label}]")
-        suffix = f"{current_label} {elapsed}"
+        prefix = _style(
+            self.console.color, self._label_color(), f"[{self.label}]"
+        )
+        suffix_parts = [part for part in (current_label, elapsed) if part]
+        if eta:
+            suffix_parts.append(eta.strip())
         if extra:
-            suffix = f"{suffix} {extra}"
+            suffix_parts.append(extra)
+        suffix = " ".join(suffix_parts)
         line = f"\r{prefix} |{bar}| {percent} {suffix}"
         if final:
             line += " done"
@@ -334,6 +386,22 @@ class ProgressBar:
         self.console._write(line)
         self._last_line_length = visible_length
         self._last_render = time.monotonic()
+
+    def _label_color(self) -> str:
+        """Return the ANSI color used for the progress prefix label."""
+        if self.label.lower() in {"ffmpeg", "whisper", "llama"}:
+            return ORANGE
+        return CYAN
+
+    def _clear_current_line(self) -> None:
+        """Erase the currently rendered progress line from the terminal."""
+        self.console._write("\r" + (" " * self._last_line_length) + "\r")
+
+    def _render_current_state(self) -> None:
+        """Render the latest saved progress state after an out-of-band log line."""
+        if self._closed:
+            return
+        self._render(self._completed, self._extra)
 
 
 class Spinner:
@@ -377,7 +445,7 @@ class Spinner:
         self._stop.set()
         self._thread.join()
         elapsed = format_seconds(time.monotonic() - self._start)
-        status = "[OK]" if exc is None else "[ERR]"
+        status = "[ OK ]" if exc is None else "[ERR!]"
         color = GREEN if exc is None else RED
         label = _style(self.console.color, color, status)
         self.console._write(f"\r{label} {self.label} ({elapsed}){' ' * 20}\n")

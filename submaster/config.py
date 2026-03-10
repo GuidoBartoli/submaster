@@ -98,7 +98,7 @@ TRANSLATION_MODEL_SPECS: dict[str, ModelSpec] = {
 MODEL_SPECS = WHISPER_MODEL_SPECS
 
 # Default CLI values shared across modules.
-DEFAULT_MODEL = "base"
+DEFAULT_MODEL = "turbo"
 DEFAULT_TRANSLATION_MODEL = "small"
 DEFAULT_LANGUAGE = "auto"
 DEFAULT_SAMPLE_RATE = 16_000
@@ -106,14 +106,14 @@ DEFAULT_THREADS = 4
 
 # llama.cpp runtime defaults tuned for subtitle translation prompts.
 LLAMA_CONTEXT_SIZE = 4_096
-LLAMA_MAX_BATCH_CUES = 12
+LLAMA_MAX_BATCH_CUES = 4
 LLAMA_MAX_BATCH_CHARS = 1_600
 LLAMA_N_GPU_LAYERS_CPU = 0
 LLAMA_N_GPU_LAYERS_ALL = 999
-LLAMA_TEMPERATURE = 0.7
-LLAMA_TOP_K = 20
-LLAMA_TOP_P = 0.6
-LLAMA_REPEAT_PENALTY = 1.05
+LLAMA_TEMPERATURE = 0.0
+LLAMA_TOP_K = 1
+LLAMA_TOP_P = 1.0
+LLAMA_REPEAT_PENALTY = 1.0
 
 # Published language labels used to normalize user-facing translation targets.
 TRANSLATION_LANGUAGES: dict[str, str] = {

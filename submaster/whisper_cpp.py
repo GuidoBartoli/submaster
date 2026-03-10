@@ -609,7 +609,7 @@ class WhisperCppRunner:
             bufsize=1,
         )
 
-        progress = self.console.progress("whisper", total=100, unit="%")
+        progress = self.console.progress("whisper", total=100, unit="%", show_value=False)
         output_lines: list[str] = []
         last_percent = 0
         started_at = time.monotonic()
@@ -627,13 +627,7 @@ class WhisperCppRunner:
                 continue
             percent = int(match.group("percent"))
             last_percent = max(last_percent, min(percent, 100))
-            elapsed = time.monotonic() - started_at
-            if last_percent > 0:
-                remaining = elapsed * (100 - last_percent) / last_percent
-                extra = f"ETA {format_seconds(remaining)}"
-            else:
-                extra = "ETA --:--"
-            progress.update(last_percent, extra=extra)
+            progress.update(last_percent)
 
         return_code = process.wait()
         total_elapsed = time.monotonic() - started_at

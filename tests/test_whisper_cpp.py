@@ -202,6 +202,7 @@ class WhisperCppRunnerTests(unittest.TestCase):
             output_base = root / "out"
             output_base.with_suffix(".srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n", encoding="utf-8")
 
+            progress_calls: list[tuple[str, float | None, str, bool]] = []
             progress_updates: list[tuple[float, str]] = []
 
             class DummyProgress:
@@ -231,7 +232,9 @@ class WhisperCppRunnerTests(unittest.TestCase):
                 info=lambda message: None,
                 warn=lambda message: None,
                 line=lambda message="": None,
-                progress=lambda label, total, unit="": DummyProgress(),
+                progress=lambda label, total, unit="", show_value=True: (
+                    progress_calls.append((label, total, unit, show_value)) or DummyProgress()
+                ),
             )
 
             runner = WhisperCppRunner.__new__(WhisperCppRunner)
@@ -249,6 +252,7 @@ class WhisperCppRunnerTests(unittest.TestCase):
                     """Seed the process with canned `whisper.cpp` output."""
                     self.stdout = iter(
                         [
+                            "progress = 15%\n",
                             "progress = 100%\n",
                             "whisper_print_timings:     total time =  1234.56 ms\n",
                         ]
@@ -290,6 +294,8 @@ class WhisperCppRunnerTests(unittest.TestCase):
             self.assertEqual(len(popen_calls), 1)
             self.assertNotIn("-np", popen_calls[0])
             self.assertIn("-pp", popen_calls[0])
+            self.assertEqual(progress_calls, [("whisper", 100, "%", False)])
+            self.assertEqual(progress_updates, [(15, ""), (100, ""), (100, "")])
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,9 +28,11 @@ class LlamaCppRunnerTests(unittest.TestCase):
             root = Path(tmpdir)
             conda_prefix = root / "conda"
             gpu_cli = conda_prefix / "bin" / "llama-cli"
+            gpu_completion = conda_prefix / "bin" / "llama-completion"
             cpu_cli = root / "path" / "llama-cli"
 
             self._make_executable(gpu_cli)
+            self._make_executable(gpu_completion)
             self._make_executable(cpu_cli)
             (conda_prefix / "lib").mkdir(parents=True, exist_ok=True)
             (conda_prefix / "lib" / "libggml-cuda.so").write_text("", encoding="utf-8")
@@ -40,7 +43,7 @@ class LlamaCppRunnerTests(unittest.TestCase):
                     with patch.object(LlamaCppRunner, "_project_root", return_value=root / "repo"):
                         resolved = runner._resolve_cli_path(None)
 
-            self.assertEqual(resolved, gpu_cli.resolve())
+            self.assertEqual(resolved, gpu_completion.resolve())
 
     def test_resolve_finds_windows_release_build_outputs(self) -> None:
         """Verify that Windows release build folders are searched for binaries."""
@@ -69,6 +72,21 @@ class LlamaCppRunnerTests(unittest.TestCase):
                     with self.assertRaises(SubmasterError):
                         runner._resolve_cli_path(None)
 
+    def test_resolve_prefers_completion_sibling_for_explicit_llama_cli(self) -> None:
+        """Verify that prompt translation upgrades explicit llama-cli paths when possible."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            explicit_cli = root / "bin" / "llama-cli"
+            completion_cli = root / "bin" / "llama-completion"
+
+            self._make_executable(explicit_cli)
+            self._make_executable(completion_cli)
+
+            runner = LlamaCppRunner.__new__(LlamaCppRunner)
+            resolved = runner._resolve_cli_path(explicit_cli)
+
+            self.assertEqual(resolved, completion_cli.resolve())
+
     def test_run_prompt_adds_ngl_zero_for_cpu(self) -> None:
         """Verify that CPU mode forces zero GPU layers when the flag is supported."""
         runner = LlamaCppRunner.__new__(LlamaCppRunner)
@@ -85,11 +103,13 @@ class LlamaCppRunnerTests(unittest.TestCase):
         runner.supports_ngl_flag = True
         runner.supports_simple_io = True
         runner.supports_no_display_prompt = True
+        runner.supports_no_conversation = True
         runner.supports_no_warmup = True
+        runner.supports_single_turn = True
         runner.gpu_backends = set()
         runner._announced_modes = set()
 
-        calls: list[list[str]] = []
+        calls: list[dict[str, object]] = []
 
         def fake_run(command, **_kwargs):
             """Capture the command and return a successful translation response.
@@ -99,8 +119,12 @@ class LlamaCppRunnerTests(unittest.TestCase):
             :returns: Minimal completed-process stub with translated output.
             :rtype: object
             """
-            calls.append(command)
-            return type("Result", (), {"returncode": 0, "stdout": "[[[cue:1]]]\nciao\n[[[/cue]]]", "stderr": ""})()
+            stdout_file = _kwargs["stdout"]
+            stderr_file = _kwargs["stderr"]
+            stdout_file.write(b"[[[cue:1]]]\nciao\n[[[/cue]]]")
+            stderr_file.write(b"")
+            calls.append({"command": command, "kwargs": _kwargs})
+            return type("Result", (), {"returncode": 0})()
 
         with patch.object(LlamaCppRunner, "_verify_gpu_runtime_linkage", return_value=None):
             with patch("submaster.llama_cpp.subprocess.run", side_effect=fake_run):
@@ -112,8 +136,27 @@ class LlamaCppRunnerTests(unittest.TestCase):
                 )
 
         self.assertEqual(output, "[[[cue:1]]]\nciao\n[[[/cue]]]")
-        self.assertIn("-ngl", calls[0])
-        self.assertIn("0", calls[0])
+        self.assertIn("-ngl", calls[0]["command"])
+        self.assertIn("0", calls[0]["command"])
+        self.assertIn("--no-conversation", calls[0]["command"])
+        self.assertNotIn("--single-turn", calls[0]["command"])
+        self.assertIs(calls[0]["kwargs"]["stdin"], subprocess.DEVNULL)
+        self.assertIn("stdout", calls[0]["kwargs"])
+        self.assertIn("stderr", calls[0]["kwargs"])
+
+    def test_estimated_max_tokens_uses_tagged_cue_payload(self) -> None:
+        """Verify that response budgets scale with cue text instead of full prompt size."""
+        runner = LlamaCppRunner.__new__(LlamaCppRunner)
+        cue_text = "x" * 200
+        prompt = (
+            "Translate the following subtitles into Italian.\n\n"
+            f"[[[cue:1]]]\n{cue_text}\n[[[/cue]]]\n\n"
+            f"[[[cue:2]]]\n{cue_text}\n[[[/cue]]]\n"
+        )
+
+        estimated = runner._estimated_max_tokens(prompt)
+
+        self.assertEqual(estimated, 464)
 
 
 class _SpinnerStub:

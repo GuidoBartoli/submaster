@@ -15,6 +15,7 @@ _BATCH_CUE_RE = re.compile(
     r"\[\[\[cue:(?P<id>\d+)\]\]\]\s*(?P<text>.*?)\s*\[\[\[/cue\]\]\]",
     re.DOTALL,
 )
+_SINGLE_CUE_START_RE = re.compile(r"\[\[\[cue:(?P<id>\d+)\]\]\]\s*", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -155,8 +156,12 @@ class SubtitleTranslator:
         )
         self.requested_device = requested_device
         self.threads = threads
+        default_batch_cap = max_batch_cues == LLAMA_MAX_BATCH_CUES
+        if default_batch_cap and "1.8b" in model_path.name.lower():
+            max_batch_cues = min(max_batch_cues, 2)
         self.max_batch_cues = max(1, max_batch_cues)
         self.max_batch_chars = max(256, max_batch_chars)
+        self._fallback_warning_emitted = False
 
     def translate_srt(self, raw_srt: str) -> str:
         """Translate an entire SRT document and return normalized SRT text.
@@ -187,10 +192,15 @@ class SubtitleTranslator:
         self.console.note(
             f"Translating subtitles to {self.target_language.name} with Tencent HY-MT."
         )
-        progress = self.console.progress("translate", total=len(cues), unit=" cues")
+        batches = self._batch_cues(cues)
+        batch_label = "batch" if len(batches) == 1 else "batches"
+        self.console.note(
+            f"Prepared {len(batches)} translation {batch_label}; progress updates after each batch finishes."
+        )
+        progress = self.console.progress("llama", total=len(cues), unit=" cues")
         translated: list[Cue] = []
 
-        for batch in self._batch_cues(cues):
+        for batch in batches:
             translated_batch = self._translate_batch(batch)
             translated.extend(translated_batch)
             progress.update(len(translated))
@@ -238,19 +248,23 @@ class SubtitleTranslator:
         :raises SubmasterError: If fallback single-cue translation also fails.
         """
         # Try the efficient batched prompt first and only fall back when cue markup is corrupted.
-        prompt = self._build_batch_prompt(batch)
+        prompt, system_prompt = self._build_model_prompt(batch)
         translated_text = self.runner.run_prompt(
             model_path=self.model_path,
             prompt=prompt,
             requested_device=self.requested_device,
             threads=self.threads,
+            system_prompt=system_prompt,
+            show_spinner=False,
         )
         parsed_text_by_id = self._parse_batch_output(translated_text, batch)
         if parsed_text_by_id is None:
-            self.console.warn(
-                "The translation batch response could not be parsed cleanly. "
-                "Retrying the current batch one cue at a time."
-            )
+            if not self._fallback_warning_emitted:
+                self.console.warn(
+                    "Some translation batch responses could not be parsed cleanly. "
+                    "Retrying failed batches one cue at a time."
+                )
+                self._fallback_warning_emitted = True
             return [self._translate_single_cue(cue) for cue in batch]
 
         # Rebuild the batch cue-by-cue so timings stay attached to the original entries.
@@ -271,41 +285,95 @@ class SubtitleTranslator:
         :rtype: Cue
         :raises SubmasterError: If the single-cue response still cannot be parsed.
         """
-        prompt = self._build_batch_prompt([cue])
+        prompt, system_prompt = self._build_model_prompt([cue])
         translated_text = self.runner.run_prompt(
             model_path=self.model_path,
             prompt=prompt,
             requested_device=self.requested_device,
             threads=self.threads,
+            system_prompt=system_prompt,
+            show_spinner=False,
         )
         parsed_text_by_id = self._parse_batch_output(translated_text, [cue])
         if parsed_text_by_id is None:
-            raise SubmasterError(
-                "llama.cpp returned an invalid single-cue translation response. "
-                "Try the larger translation model or shorten the subtitle batch."
-            )
+            permissive_text = self._parse_permissive_single_output(translated_text)
+            if permissive_text is None:
+                raise SubmasterError(
+                    "llama.cpp returned an invalid single-cue translation response. "
+                    "Try the larger translation model or shorten the subtitle batch."
+                )
+            parsed_text_by_id = {1: permissive_text}
 
         translated_lines = self._split_translated_lines(parsed_text_by_id[1])
         return Cue(start_ms=cue.start_ms, end_ms=cue.end_ms, text=translated_lines)
 
     def _build_batch_prompt(self, batch: list[Cue]) -> str:
-        """Build a structured prompt for one translation batch.
+        """Build the cue payload for one translation batch.
 
         :param batch: Cue batch to encode into the prompt.
         :type batch: list[Cue]
-        :returns: Prompt text containing instructions and tagged cue payloads.
+        :returns: Cue-tagged payload without model instructions.
         :rtype: str
         """
-        target_name = self.target_language.name
         payload_blocks: list[str] = []
 
         # Wrap each cue in explicit tags so the response can be parsed deterministically.
         for index, cue in enumerate(batch, start=1):
             cue_text = "\n".join(line.strip() for line in cue.text if line.strip())
             payload_blocks.append(f"[[[cue:{index}]]]\n{cue_text}\n[[[/cue]]]")
-        payload = "\n\n".join(payload_blocks)
+        return "\n\n".join(payload_blocks) + "\n"
 
-        # Use a Chinese instruction template when either side of the translation looks Chinese.
+    def _build_system_prompt(self) -> str | None:
+        """Build a translation system prompt when the runner supports chat turns.
+
+        :returns: System prompt text used to steer translation output.
+        :rtype: str | None
+        """
+        supports_chat_turn = bool(
+            getattr(self.runner, "supports_conversation", False)
+            and getattr(self.runner, "supports_single_turn", False)
+        )
+        if not supports_chat_turn:
+            return None
+
+        target_name = self.target_language.name
+        if _looks_like_chinese(self.target_language) or _looks_like_chinese(self.source_language):
+            instructions = [f"请将用户提供的字幕翻译成{target_name}。"]
+            instructions.append("严格保留每个[[[cue:N]]]与[[[/cue]]]标记，不要新增说明。")
+            instructions.append("不要合并、删除或重排任何字幕块。")
+            instructions.append("只输出翻译后的字幕块，并保持原有顺序。")
+        else:
+            instructions = [f"Translate the user's subtitle cues into {target_name}."]
+            instructions.append("Preserve every [[[cue:N]]] and [[[/cue]]] marker exactly.")
+            instructions.append("Do not add explanations.")
+            instructions.append("Do not merge, remove, or reorder any cue.")
+            instructions.append("Output only the translated cues in the same order.")
+
+        if self.source_language is not None:
+            instructions.append(f"Source language: {self.source_language.name}.")
+        return " ".join(instructions)
+
+    def _build_model_prompt(self, batch: list[Cue]) -> tuple[str, str | None]:
+        """Build the effective prompt payload and optional system prompt.
+
+        :param batch: Cue batch to encode for the model.
+        :type batch: list[Cue]
+        :returns: Prompt payload plus optional system prompt.
+        :rtype: tuple[str, str | None]
+        """
+        payload = self._build_batch_prompt(batch)
+        system_prompt = self._build_system_prompt()
+        if system_prompt is not None:
+            return payload, system_prompt
+        return f"{self._build_legacy_instructions()}\n{payload}", None
+
+    def _build_legacy_instructions(self) -> str:
+        """Build the inline instruction header for non-chat llama.cpp modes.
+
+        :returns: Prompt instructions prepended to the batch payload.
+        :rtype: str
+        """
+        target_name = self.target_language.name
         if _looks_like_chinese(self.target_language) or _looks_like_chinese(self.source_language):
             instructions = (
                 f"请将以下字幕翻译成{target_name}。\n"
@@ -323,8 +391,7 @@ class SubtitleTranslator:
 
         if self.source_language is not None:
             instructions += f"Source language: {self.source_language.name}.\n"
-
-        return f"{instructions}\n{payload}\n"
+        return instructions
 
     def _parse_batch_output(self, raw_output: str, batch: list[Cue]) -> dict[int, str] | None:
         """Parse a tagged batch response into cue-id keyed text.
@@ -366,3 +433,25 @@ class SubtitleTranslator:
         lines = [line.rstrip() for line in raw_text.replace("\r\n", "\n").split("\n")]
         cleaned = [line for line in lines if line.strip()]
         return cleaned or [raw_text.strip() or ""]
+
+    def _parse_permissive_single_output(self, raw_output: str) -> str | None:
+        """Recover a single-cue translation when the closing tag is missing.
+
+        :param raw_output: Raw model output for a single subtitle cue.
+        :type raw_output: str
+        :returns: Recovered translated text, or `None` when recovery is unsafe.
+        :rtype: str | None
+        """
+        normalized = raw_output.strip()
+        if not normalized:
+            return None
+
+        match = _SINGLE_CUE_START_RE.search(normalized)
+        if match:
+            if int(match.group("id")) != 1:
+                return None
+            normalized = normalized[match.end():].strip()
+
+        if "[[[cue:" in normalized or "[[[/cue]]]" in normalized:
+            return None
+        return normalized or None
