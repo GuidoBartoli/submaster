@@ -72,8 +72,7 @@ def parse_srt(raw_srt: str) -> list[Cue]:
     return cues
 
 
-def normalize_srt(raw_srt: str) -> str:
-    cues = parse_srt(raw_srt)
+def render_srt(cues: list[Cue]) -> str:
     blocks: list[str] = []
     for index, cue in enumerate(cues, start=1):
         # Rebuild every cue so numbering, timestamp separators, and line endings stay consistent.
@@ -84,3 +83,7 @@ def normalize_srt(raw_srt: str) -> str:
             f"{text}"
         )
     return "\r\n\r\n".join(blocks) + "\r\n"
+
+
+def normalize_srt(raw_srt: str) -> str:
+    return render_srt(parse_srt(raw_srt))

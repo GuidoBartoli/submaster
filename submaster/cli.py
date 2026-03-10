@@ -5,19 +5,31 @@ import os
 import shutil
 from pathlib import Path
 
-from .config import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_THREADS, MODEL_SPECS
+from .config import (
+    DEFAULT_LANGUAGE,
+    DEFAULT_MODEL,
+    DEFAULT_THREADS,
+    DEFAULT_TRANSLATION_MODEL,
+    MODEL_SPECS,
+    TRANSLATION_MODEL_SPECS,
+)
 from .console import Console
 from .errors import SubmasterError
+from .llama_cpp import LlamaCppRunner
 from .media import create_work_dir, extract_audio, has_video_stream
-from .models import ensure_model_available
+from .models import ensure_model_available, ensure_translation_model_available
 from .srt import normalize_srt
+from .translation import SubtitleTranslator
 from .whisper_cpp import WhisperCppRunner
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="submaster",
-        description="Create synchronized .srt subtitles from a video file using whisper.cpp.",
+        description=(
+            "Create synchronized .srt subtitles from a video file using whisper.cpp, "
+            "with optional offline translation via llama.cpp."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("input", help="Path to a video file.")
@@ -80,6 +92,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Display whisper.cpp model-load metadata.",
     )
+    parser.add_argument(
+        "--translate-to",
+        help="Translate the generated subtitles into the given target language code or name.",
+    )
+    parser.add_argument(
+        "--translation-model",
+        default=DEFAULT_TRANSLATION_MODEL,
+        choices=tuple(TRANSLATION_MODEL_SPECS),
+        help="Tencent HY-MT translation model size to use when --translate-to is set.",
+    )
+    parser.add_argument(
+        "--llama-cli",
+        help="Path to a llama.cpp executable such as llama-cli.",
+    )
     return parser
 
 
@@ -140,9 +166,10 @@ def main(argv: list[str] | None = None) -> int:
             raise SubmasterError(
                 "Input must contain a video stream."
             )
-        console.info(
-            f"Model: {args.model} | Language: {args.language} | Device: {args.device}"
-        )
+        summary = f"Whisper: {args.model} | Language: {args.language} | Device: {args.device}"
+        if args.translate_to:
+            summary += f" | Translate to: {args.translate_to} ({args.translation_model})"
+        console.info(summary)
 
         runner = WhisperCppRunner(
             console=console,
@@ -170,6 +197,27 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         normalized_srt = normalize_srt(raw_srt_path.read_text(encoding="utf-8"))
+        if args.translate_to:
+            translation_model_path = ensure_translation_model_available(
+                args.translation_model,
+                Path(args.models_dir).expanduser().resolve(),
+                console,
+            )
+            translation_runner = LlamaCppRunner(
+                console=console,
+                cli_path=Path(args.llama_cli).expanduser() if args.llama_cli else None,
+            )
+            translator = SubtitleTranslator(
+                console=console,
+                runner=translation_runner,
+                model_path=translation_model_path,
+                target_language=args.translate_to,
+                source_language=args.language,
+                requested_device=args.device,
+                threads=args.threads,
+            )
+            normalized_srt = translator.translate_srt(normalized_srt)
+
         output_path.write_text(normalized_srt, encoding="utf-8", newline="")
 
         if args.keep_audio:

@@ -12,7 +12,7 @@ license = { file = "LICENSE" }
 authors = [
   { name = "Guido" }
 ]
-keywords = ["subtitles", "whisper", "whisper.cpp", "ffmpeg", "srt"]
+keywords = ["subtitles", "translation", "whisper", "whisper.cpp", "llama.cpp", "ffmpeg", "srt"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
