@@ -5,35 +5,53 @@ import platform
 import re
 import shutil
 import subprocess
-import time
+import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 
-from .console import Console, format_seconds
+from .config import (
+    LLAMA_CONTEXT_SIZE,
+    LLAMA_MAX_BATCH_CHARS,
+    LLAMA_N_GPU_LAYERS_ALL,
+    LLAMA_N_GPU_LAYERS_CPU,
+    LLAMA_REPEAT_PENALTY,
+    LLAMA_TEMPERATURE,
+    LLAMA_TOP_K,
+    LLAMA_TOP_P,
+)
+from .console import Console
 from .errors import SubmasterError
 
+_PROMPT_CUE_RE = re.compile(
+    r"\[\[\[cue:(?P<id>\d+)\]\]\]\s*(?P<text>.*?)\s*\[\[\[/cue\]\]\]",
+    re.DOTALL,
+)
 
-class WhisperCppRunner:
-    """Discover and invoke a local `whisper.cpp` command-line executable."""
 
-    PROGRESS_RE = re.compile(r"progress\s*=\s*(?P<percent>\d+)%")
-    TIMING_RE = re.compile(r"whisper_print_timings:\s*(?P<detail>.+)")
-    MODEL_LOAD_RE = re.compile(r"whisper_model_load:\s*(?P<detail>.+)")
+class LlamaCppRunner:
+    """Discover and invoke a local `llama.cpp` command-line executable."""
 
     def __init__(self, console: Console, cli_path: Path | None = None) -> None:
         """Initialize the runner and inspect the selected executable.
 
-        :param console: Console used for status, warnings, and progress output.
+        :param console: Console used for status, warnings, and spinner output.
         :type console: Console
-        :param cli_path: Optional explicit path to a `whisper.cpp` executable.
+        :param cli_path: Optional explicit path to a `llama.cpp` executable.
         :type cli_path: pathlib.Path | None
         :raises SubmasterError: If no usable executable can be found.
         """
         self.console = console
         self.cli_path = self._resolve_cli_path(cli_path)
-        # Cache feature probes once so transcription calls can assemble the
-        # right command line without repeated subprocess invocations.
-        self.supports_no_gpu_flag = self._supports_flag("-ng")
+        # Cache supported flags and GPU backends once so translation calls can stay fast.
+        self.supports_ngl_flag = self._supports_any_flag("-ngl", "--n-gpu-layers")
+        self.supports_simple_io = self._supports_any_flag("--simple-io")
+        self.supports_no_display_prompt = self._supports_any_flag("--no-display-prompt")
+        self.supports_conversation = self._supports_any_flag("-cnv", "--conversation")
+        self.supports_no_conversation = self._supports_any_flag("-no-cnv", "--no-conversation")
+        self.supports_no_warmup = self._supports_any_flag("--no-warmup")
+        self.supports_single_turn = self._supports_any_flag("--single-turn")
         self.gpu_backends = self._detect_gpu_backends_for(self.cli_path)
+        self._announced_modes: set[str] = set()
 
     def _project_root(self) -> Path:
         """Return the repository root used for local binary discovery.
@@ -50,11 +68,7 @@ class WhisperCppRunner:
         :rtype: tuple[str, ...]
         """
         raw_value = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-        return tuple(
-            ext.lower()
-            for ext in raw_value.split(";")
-            if ext.strip()
-        )
+        return tuple(ext.lower() for ext in raw_value.split(";") if ext.strip())
 
     def _is_executable_file(self, candidate: Path) -> bool:
         """Check whether a candidate path is an executable file.
@@ -93,7 +107,38 @@ class WhisperCppRunner:
         :returns: Command names accepted for PATH discovery.
         :rtype: tuple[str, ...]
         """
-        return ("whisper-cli", "main")
+        return ("llama-completion", "llama-cli", "main")
+
+    def _completion_sibling_for(self, candidate: Path) -> Path | None:
+        """Return a sibling `llama-completion` executable when present.
+
+        :param candidate: Candidate executable path selected for translation.
+        :type candidate: pathlib.Path
+        :returns: Sibling completion executable, or `None` when unavailable.
+        :rtype: pathlib.Path | None
+        """
+        normalized_name = candidate.name.lower()
+        if "llama-completion" in normalized_name:
+            return candidate
+        if normalized_name not in {"llama-cli", "llama-cli.exe", "main", "main.exe"}:
+            return None
+
+        sibling_name = "llama-completion.exe" if candidate.suffix.lower() == ".exe" else "llama-completion"
+        sibling = candidate.with_name(sibling_name)
+        if self._is_executable_file(sibling):
+            return sibling
+        return None
+
+    def _prefer_completion_binary(self, candidate: Path) -> Path:
+        """Prefer the dedicated completion binary for prompt-based translation.
+
+        :param candidate: Candidate executable path.
+        :type candidate: pathlib.Path
+        :returns: Completion-capable executable path.
+        :rtype: pathlib.Path
+        """
+        completion_sibling = self._completion_sibling_for(candidate)
+        return completion_sibling or candidate
 
     def _local_command_names(self) -> tuple[str, ...]:
         """Return executable names to search in local build directories.
@@ -108,7 +153,7 @@ class WhisperCppRunner:
         return exe_names + base_names
 
     def _common_build_directories(self, root: Path) -> list[Path]:
-        """List common `whisper.cpp` build output directories under a root.
+        """List common `llama.cpp` build output directories under a root.
 
         :param root: Root directory to inspect.
         :type root: pathlib.Path
@@ -117,11 +162,9 @@ class WhisperCppRunner:
         """
         # Cover both in-repo builds and standard CMake configuration subdirectories.
         directories = [
-            root / "whisper.cpp" / "build" / "bin",
-            root / "whisper.cpp" / "build" / "src",
-            root / "whisper.cpp" / "build",
+            root / "llama.cpp" / "build" / "bin",
+            root / "llama.cpp" / "build",
             root / "build" / "bin",
-            root / "build" / "src",
             root / "build",
             root,
         ]
@@ -148,24 +191,8 @@ class WhisperCppRunner:
         """
         return [directory / name for directory in directories for name in names]
 
-    def _bundled_candidate_paths(self, project_root: Path) -> list[Path]:
-        """Return bundled fallback binary locations for supported platforms.
-
-        :param project_root: Repository root containing the bundled binary folder.
-        :type project_root: pathlib.Path
-        :returns: Candidate bundled executable paths.
-        :rtype: list[pathlib.Path]
-        """
-        if platform.system() == "Linux":
-            names = ("whisper-cli-gpu", "whisper-cli-cpu", "whisper-cli")
-        elif platform.system() == "Windows":
-            names = ("whisper-cli-gpu.exe", "whisper-cli-cpu.exe", "whisper-cli.exe")
-        else:
-            names = ()
-        return [project_root / "whisper" / name for name in names]
-
     def _resolve_cli_path(self, cli_path: Path | None) -> Path:
-        """Resolve the best available `whisper.cpp` executable path.
+        """Resolve the best available `llama.cpp` executable path.
 
         :param cli_path: Optional explicit executable path from the caller.
         :type cli_path: pathlib.Path | None
@@ -180,7 +207,7 @@ class WhisperCppRunner:
         if cli_path:
             explicit_candidates.extend(self._expand_explicit_candidate(cli_path))
 
-        env_candidate = os.environ.get("WHISPER_CPP_CLI")
+        env_candidate = os.environ.get("LLAMA_CPP_CLI")
         if env_candidate:
             explicit_candidates.extend(self._expand_explicit_candidate(Path(env_candidate)))
 
@@ -188,7 +215,9 @@ class WhisperCppRunner:
         conda_prefix = os.environ.get("CONDA_PREFIX")
         if conda_prefix:
             prefix_path = Path(conda_prefix)
-            discovered_candidates.extend(self._candidate_paths([prefix_path / "bin"], self._local_command_names()))
+            discovered_candidates.extend(
+                self._candidate_paths([prefix_path / "bin"], self._local_command_names())
+            )
             discovered_candidates.extend(
                 self._candidate_paths(
                     [
@@ -205,41 +234,34 @@ class WhisperCppRunner:
             if resolved:
                 discovered_candidates.append(Path(resolved))
 
+        # Finally search common local build layouts in the current working tree and repo root.
         cwd = Path.cwd()
         project_root = self._project_root()
-
-        # Check the common local build layouts before falling back to the bundled binary.
         discovered_candidates.extend(
             self._candidate_paths(self._common_build_directories(cwd), self._local_command_names())
         )
-        bundled_candidates = self._bundled_candidate_paths(project_root)
+        discovered_candidates.extend(
+            self._candidate_paths(self._common_build_directories(project_root), self._local_command_names())
+        )
 
-        searched = explicit_candidates + discovered_candidates + bundled_candidates
+        searched = explicit_candidates + discovered_candidates
 
         # Respect explicit paths as long as they resolve to a runnable executable.
         for candidate in self._existing_candidates(explicit_candidates):
             if candidate and self._is_executable_file(candidate):
-                return candidate.resolve()
+                return self._prefer_completion_binary(candidate).resolve()
 
         # Prefer GPU-capable builds when discovery finds multiple executables.
         ranked_discovered = self._rank_candidates_by_gpu(discovered_candidates)
         if ranked_discovered:
-            return ranked_discovered[0].resolve()
-
-        ranked_bundled = self._rank_candidates_by_gpu(bundled_candidates)
-        if ranked_bundled:
-            return ranked_bundled[0].resolve()
+            return self._prefer_completion_binary(ranked_discovered[0]).resolve()
 
         searched_text = "\n".join(f"  - {item}" for item in searched if item)
-        if platform.system() == "Linux":
-            bundled_hint = "or use the bundled fallback at './whisper/whisper-cli'."
-        else:
-            bundled_hint = "A repo-local bundled fallback is only shipped for Linux x86_64."
         raise SubmasterError(
-            "Unable to find a whisper.cpp executable.\n"
-            f"Install or build whisper.cpp, put 'whisper-cli' on PATH, or place an executable path in --whisper-cli / WHISPER_CPP_CLI. {bundled_hint}\n"
-            "If you are using Conda, install 'conda-forge::whisper.cpp'.\n"
-            "Note: the PyPI package named 'whisper-cli' is not the whisper.cpp binary used by this app.\n"
+            "Unable to find a llama.cpp executable.\n"
+            "Install or build llama.cpp, put 'llama-cli' on PATH, or place an executable path "
+            "in --llama-cli / LLAMA_CPP_CLI.\n"
+            "If you are using Conda, install 'conda-forge::llama.cpp'.\n"
             f"Searched:\n{searched_text}"
         )
 
@@ -286,12 +308,12 @@ class WhisperCppRunner:
                 cpu_candidates.append(candidate)
         return gpu_candidates + cpu_candidates
 
-    def _supports_flag(self, flag: str) -> bool:
-        """Check whether the selected executable advertises a CLI flag.
+    def _supports_any_flag(self, *flags: str) -> bool:
+        """Check whether the selected executable advertises any given CLI flag.
 
-        :param flag: Flag to search for in the help output.
-        :type flag: str
-        :returns: `True` when the flag is mentioned by the executable.
+        :param flags: One or more flags to search for in the help output.
+        :type flags: str
+        :returns: `True` when at least one flag is mentioned by the executable.
         :rtype: bool
         """
         # Probe both common help switches because downstream packages do not always support both.
@@ -306,12 +328,12 @@ class WhisperCppRunner:
             except OSError:
                 continue
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
-            if flag in help_text:
+            if any(flag in help_text for flag in flags):
                 return True
         return False
 
     def _detect_gpu_backends_for(self, cli_path: Path) -> set[str]:
-        """Detect available GPU backends near a `whisper.cpp` executable.
+        """Detect available GPU backends near a `llama.cpp` executable.
 
         :param cli_path: Executable path whose sibling libraries should be inspected.
         :type cli_path: pathlib.Path
@@ -412,83 +434,22 @@ class WhisperCppRunner:
             return
 
         linked_backends, linked_lines = self._inspect_linked_ggml_libraries()
-        if not linked_lines:
-            return
-        if linked_backends:
+        if not linked_lines or linked_backends:
             return
 
         detail = "\n".join(linked_lines)
         raise SubmasterError(
-            "GPU was requested, but the selected whisper.cpp executable is dynamically linked "
+            "GPU was requested, but the selected llama.cpp executable is dynamically linked "
             "against CPU-only ggml libraries at runtime.\n"
-            "This usually happens when a Conda environment provides libggml-cpu and shadows "
-            "your local CUDA-enabled whisper.cpp build.\n"
-            "Rebuild whisper.cpp outside Conda with -DGGML_CUDA=1 -DBUILD_SHARED_LIBS=OFF, "
-            "or make sure libggml-cuda is the library that ldd resolves.\n"
+            "This usually happens when a Conda environment provides CPU-only ggml libraries "
+            "that shadow your local GPU-enabled llama.cpp build.\n"
+            "Rebuild llama.cpp outside Conda with the desired GPU backend enabled, or make "
+            "sure ldd resolves a GPU ggml library.\n"
             f"ldd output:\n{detail}"
         )
 
-    def _extract_timing_lines(self, lines: list[str]) -> list[str]:
-        """Extract `whisper.cpp` timing lines from combined process output.
-
-        :param lines: Raw output lines emitted by the executable.
-        :type lines: list[str]
-        :returns: Timing detail lines stripped of their log prefix.
-        :rtype: list[str]
-        """
-        timings: list[str] = []
-        for line in lines:
-            match = self.TIMING_RE.search(line)
-            if not match:
-                continue
-            timings.append(match.group("detail").strip())
-        return timings
-
-    def _extract_model_load_lines(self, lines: list[str]) -> list[str]:
-        """Extract model-load metadata lines from combined process output.
-
-        :param lines: Raw output lines emitted by the executable.
-        :type lines: list[str]
-        :returns: Model-load detail lines stripped of their log prefix.
-        :rtype: list[str]
-        """
-        details: list[str] = []
-        for line in lines:
-            match = self.MODEL_LOAD_RE.search(line)
-            if not match:
-                continue
-            details.append(match.group("detail").strip())
-        return details
-
-    def _print_model_summary(self, model_load_lines: list[str]) -> None:
-        """Print model-load metadata collected from `whisper.cpp`.
-
-        :param model_load_lines: Parsed model-load detail lines.
-        :type model_load_lines: list[str]
-        """
-        if not model_load_lines:
-            return
-        self.console.info("whisper.cpp model:")
-        for detail in model_load_lines:
-            self.console.line(f"       {detail}")
-
-    def _print_timing_summary(self, elapsed_seconds: float, timing_lines: list[str]) -> None:
-        """Print wall-clock and internal timing information.
-
-        :param elapsed_seconds: Measured wall-clock runtime for the transcription.
-        :type elapsed_seconds: float
-        :param timing_lines: Parsed timing detail lines from `whisper.cpp`.
-        :type timing_lines: list[str]
-        """
-        self.console.info(f"Transcription wall time: {format_seconds(elapsed_seconds)}")
-        if not timing_lines:
-            return
-        self.console.info("whisper.cpp timings:")
-        for timing_line in timing_lines:
-            self.console.line(f"       {timing_line}")
-
     def resolve_device(self, requested: str) -> str:
-        """Resolve the effective runtime device for transcription.
+        """Resolve the effective runtime device for translation.
 
         :param requested: Requested device mode: `auto`, `cpu`, or `gpu`.
         :type requested: str
@@ -509,148 +470,177 @@ class WhisperCppRunner:
             return "gpu"
         if not self.gpu_backends:
             return "cpu"
-        if "cuda" not in self.gpu_backends:
-            return "gpu"
-        nvidia_smi = shutil.which("nvidia-smi")
-        if nvidia_smi:
-            probe = subprocess.run(
-                [nvidia_smi, "-L"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if probe.returncode == 0 and probe.stdout.strip():
-                return "gpu"
         return "gpu"
 
-    def run(
-        self,
-        audio_path: Path,
-        model_path: Path,
-        output_base: Path,
-        language: str,
-        requested_device: str,
-        threads: int,
-        show_timings: bool,
-        show_model_info: bool,
-    ) -> Path:
-        """Run `whisper.cpp` and return the generated subtitle file path.
+    def _estimated_max_tokens(self, prompt: str) -> int:
+        """Estimate a completion token budget from prompt size.
 
-        :param audio_path: Normalized WAV file to transcribe.
-        :type audio_path: pathlib.Path
-        :param model_path: Whisper model file to load.
-        :type model_path: pathlib.Path
-        :param output_base: Output basename used by `whisper.cpp`.
-        :type output_base: pathlib.Path
-        :param language: Language code or `auto` for detection.
-        :type language: str
-        :param requested_device: Requested device mode: `auto`, `cpu`, or `gpu`.
-        :type requested_device: str
-        :param threads: Number of CPU threads to use.
-        :type threads: int
-        :param show_timings: Whether to print extracted timing information.
-        :type show_timings: bool
-        :param show_model_info: Whether to print extracted model-load metadata.
-        :type show_model_info: bool
-        :returns: Path to the generated SRT file.
-        :rtype: pathlib.Path
-        :raises SubmasterError: If execution fails or no SRT file is produced.
+        :param prompt: Prompt text that will be sent to `llama.cpp`.
+        :type prompt: str
+        :returns: Conservative maximum token count for the response.
+        :rtype: int
         """
-        requested = requested_device.lower()
-        device = self.resolve_device(requested_device)
+        matches = list(_PROMPT_CUE_RE.finditer(prompt))
+        if matches:
+            source_chars = sum(len(match.group("text").strip()) for match in matches)
+            # Translation output often matches source length and must repeat cue markers.
+            token_budget = source_chars + (len(matches) * 32)
+            return max(256, min(1_536, token_budget))
+
+        prompt_chars = max(1, len(prompt))
+        return max(256, min(768, int(prompt_chars / 2)))
+
+    def _normalize_output(self, output: str) -> str:
+        """Normalize raw model output for downstream cue parsing.
+
+        :param output: Raw stdout emitted by `llama.cpp`.
+        :type output: str
+        :returns: Cleaned translation text with wrapper fences removed.
+        :rtype: str
+        """
+        normalized = output.strip()
+        normalized = normalized.replace("[end of text]", "").strip()
+        if normalized.startswith("```"):
+            # Some models wrap responses in fenced blocks; remove the fence lines only.
+            parts = normalized.split("```")
+            normalized = "\n".join(part for part in parts if part.strip() and not part.strip().isidentifier())
+        return normalized.strip()
+
+    def _announce_mode_once(self, device: str) -> None:
+        """Emit the selected runtime mode at most once per device.
+
+        :param device: Effective device mode being used.
+        :type device: str
+        """
+        if device in self._announced_modes:
+            return
+
         backend_label = ", ".join(sorted(self.gpu_backends)) if self.gpu_backends else "cpu-only build"
-
-        # Build the base command first, then layer language and device-specific flags on top.
-        command = [
-            str(self.cli_path),
-            "-m",
-            str(model_path),
-            "-f",
-            str(audio_path),
-            "-of",
-            str(output_base),
-            "-osrt",
-            "-pp",
-            "-t",
-            str(max(1, threads)),
-        ]
-
-        if language.lower() != "auto":
-            command.extend(["-l", language])
-
-        # Warn when the requested mode cannot be honored because the discovered build is CPU-only.
-        if requested in {"auto", "gpu"} and device == "cpu" and not self.gpu_backends and platform.system() != "Darwin":
-            self.console.warn(
-                "GPU was requested or auto-selected, but this whisper.cpp executable appears CPU-only. "
-                "Build whisper.cpp with CUDA/Vulkan/OpenCL support to use the GPU."
-            )
-        elif requested == "gpu" and device == "cpu":
-            self.console.warn("GPU was requested, but no usable GPU backend was detected. Falling back to CPU.")
-
-        # Force CPU mode only when the selected binary advertises a dedicated no-GPU switch.
-        if device == "cpu" and self.supports_no_gpu_flag:
-            command.append("-ng")
-        elif device == "cpu" and not self.supports_no_gpu_flag:
-            self.console.warn("This whisper.cpp build does not advertise '-ng'; CPU forcing may be ignored.")
-
         if device == "gpu":
             self.console.info(f"GPU mode requested via {self.cli_path.name} ({backend_label}).")
         else:
             self.console.info(f"CPU mode requested via {self.cli_path.name} ({backend_label}).")
+        self._announced_modes.add(device)
 
+    def run_prompt(
+        self,
+        model_path: Path,
+        prompt: str,
+        requested_device: str,
+        threads: int,
+        system_prompt: str | None = None,
+        show_spinner: bool = True,
+    ) -> str:
+        """Run a translation prompt through `llama.cpp`.
+
+        :param model_path: Translation model file to load.
+        :type model_path: pathlib.Path
+        :param prompt: Prompt text to send to the model.
+        :type prompt: str
+        :param requested_device: Requested device mode: `auto`, `cpu`, or `gpu`.
+        :type requested_device: str
+        :param threads: Number of CPU threads to use.
+        :type threads: int
+        :returns: Normalized text output from the model.
+        :rtype: str
+        :raises SubmasterError: If execution fails or produces no usable output.
+        """
+        requested = requested_device.lower()
+        device = self.resolve_device(requested_device)
+
+        # Warn when the requested mode cannot be honored because the discovered build is CPU-only.
+        if requested in {"auto", "gpu"} and device == "cpu" and not self.gpu_backends and platform.system() != "Darwin":
+            self.console.warn(
+                "GPU was requested or auto-selected, but this llama.cpp executable appears CPU-only. "
+                "Build llama.cpp with CUDA, Vulkan, Metal, HIP, OpenCL, or SYCL support to use the GPU."
+            )
+        elif requested == "gpu" and device == "cpu":
+            self.console.warn("GPU was requested, but no usable GPU backend was detected. Falling back to CPU.")
+
+        # Build a deterministic command line so batch translation output stays machine-parseable.
+        command = [
+            str(self.cli_path),
+            "-m",
+            str(model_path),
+            "-n",
+            str(self._estimated_max_tokens(prompt)),
+            "-c",
+            str(LLAMA_CONTEXT_SIZE),
+            "-t",
+            str(max(1, threads)),
+            "--temp",
+            str(LLAMA_TEMPERATURE),
+            "--top-k",
+            str(LLAMA_TOP_K),
+            "--top-p",
+            str(LLAMA_TOP_P),
+            "--repeat-penalty",
+            str(LLAMA_REPEAT_PENALTY),
+        ]
+
+        use_chat_turn = bool(system_prompt and self.supports_conversation and self.supports_single_turn)
+        if use_chat_turn:
+            command.extend(
+                [
+                    "--conversation",
+                    "--single-turn",
+                    "--system-prompt",
+                    system_prompt,
+                    "-p",
+                    prompt,
+                ]
+            )
+        else:
+            command.extend(["-p", prompt])
+
+        # Enable optional quality-of-life flags only when the selected binary advertises them.
+        if self.supports_simple_io:
+            command.append("--simple-io")
+        if self.supports_no_display_prompt:
+            command.append("--no-display-prompt")
+        if not use_chat_turn and self.supports_no_conversation:
+            command.append("--no-conversation")
+        if self.supports_no_warmup:
+            command.append("--no-warmup")
+        if not use_chat_turn and not self.supports_no_conversation and self.supports_single_turn:
+            command.append("--single-turn")
+
+        if self.supports_ngl_flag:
+            gpu_layers = LLAMA_N_GPU_LAYERS_ALL if device == "gpu" else LLAMA_N_GPU_LAYERS_CPU
+            command.extend(["-ngl", str(gpu_layers)])
+        elif device == "cpu":
+            self.console.warn("This llama.cpp build does not advertise '-ngl'; CPU forcing may be ignored.")
+
+        self._announce_mode_once(device)
         self._verify_gpu_runtime_linkage(requested, device)
 
-        # Stream stdout so progress lines can update the terminal in real time.
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
+        spinner_context = self.console.spinner("Running subtitle translation batch.") if show_spinner else nullcontext()
+        with spinner_context:
+            with tempfile.SpooledTemporaryFile(max_size=1_048_576) as stdout_file:
+                with tempfile.SpooledTemporaryFile(max_size=1_048_576) as stderr_file:
+                    result = subprocess.run(
+                        command,
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                        stdin=subprocess.DEVNULL,
+                        check=False,
+                    )
+                    stdout_file.seek(0)
+                    stderr_file.seek(0)
+                    stdout_text = stdout_file.read().decode("utf-8", errors="replace")
+                    stderr_text = stderr_file.read().decode("utf-8", errors="replace")
 
-        progress = self.console.progress("whisper", total=100, unit="%", show_value=False)
-        output_lines: list[str] = []
-        last_percent = 0
-        started_at = time.monotonic()
+        # Surface combined stdout and stderr when the subprocess fails.
+        if result.returncode != 0:
+            detail = "\n".join(
+                part.strip()
+                for part in (stdout_text, stderr_text)
+                if part and part.strip()
+            )
+            raise SubmasterError(detail or "llama.cpp translation failed.")
 
-        assert process.stdout is not None
-
-        # Parse progress lines while retaining the full output for error reporting and summaries.
-        for raw_line in process.stdout:
-            line = raw_line.strip()
-            if not line:
-                continue
-            output_lines.append(line)
-            match = self.PROGRESS_RE.search(line)
-            if not match:
-                continue
-            percent = int(match.group("percent"))
-            last_percent = max(last_percent, min(percent, 100))
-            progress.update(last_percent)
-
-        return_code = process.wait()
-        total_elapsed = time.monotonic() - started_at
-        finish_extra = ""
-
-        # Preserve partial completion information when the process stops early.
-        if last_percent > 0 and last_percent < 100:
-            finish_extra = f"stopped at {last_percent}% after {format_seconds(total_elapsed)}"
-        progress.finish(100 if return_code == 0 else last_percent, extra=finish_extra)
-
-        if return_code != 0:
-            detail = "\n".join(output_lines)
-            raise SubmasterError(detail or "whisper.cpp transcription failed.")
-
-        # Print optional summaries only after a successful run so the output remains readable.
-        if show_model_info:
-            self._print_model_summary(self._extract_model_load_lines(output_lines))
-        if show_timings:
-            self._print_timing_summary(total_elapsed, self._extract_timing_lines(output_lines))
-
-        # `whisper.cpp` writes the SRT next to the requested output basename.
-        srt_path = output_base.with_suffix(".srt")
-        if not srt_path.exists():
-            raise SubmasterError("whisper.cpp finished without creating an SRT file.")
-
-        return srt_path
+        # Normalize the model output before cue parsing so fenced wrappers do not break the translator.
+        normalized_output = self._normalize_output(stdout_text)
+        if not normalized_output:
+            raise SubmasterError("llama.cpp finished without producing translated text.")
+        return normalized_output

@@ -7,6 +7,7 @@ dependencies:
   - pip
   - ffmpeg
   - whisper.cpp
+  - llama.cpp
   - git
   - cmake
   - ninja

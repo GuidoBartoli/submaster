@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: submaster
-Version: 0.1.0
+Version: 0.2.0
 Summary: Offline subtitle generation from audio or video using whisper.cpp
 Author: Guido
 License:                                  Apache License

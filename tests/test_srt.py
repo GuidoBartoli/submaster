@@ -5,10 +5,14 @@ from submaster.srt import format_timestamp, normalize_srt, parse_srt
 
 
 class SrtTests(unittest.TestCase):
+    """Exercise SRT parsing and rendering helpers."""
+
     def test_format_timestamp(self) -> None:
+        """Verify that millisecond timestamps render in canonical SRT format."""
         self.assertEqual(format_timestamp(3_723_456), "01:02:03,456")
 
     def test_normalize_srt_reindexes_and_normalizes_newlines(self) -> None:
+        """Verify that normalization fixes numbering and line-ending style."""
         raw = (
             "7\n"
             "00:00:00.000 --> 00:00:01.500\n"
@@ -29,6 +33,7 @@ class SrtTests(unittest.TestCase):
         self.assertEqual(normalized, expected)
 
     def test_parse_srt_rejects_reverse_ranges(self) -> None:
+        """Verify that cues ending before they start are rejected."""
         with self.assertRaises(SubmasterError):
             parse_srt("1\n00:00:02,000 --> 00:00:01,000\nbad\n")
 

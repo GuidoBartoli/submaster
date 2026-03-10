@@ -11,6 +11,19 @@ from .errors import SubmasterError
 
 
 def _run_probe(input_path: Path, entries: str, target: str) -> str:
+    """Run `ffprobe` and return the raw JSON payload.
+
+    :param input_path: Media file to inspect.
+    :type input_path: pathlib.Path
+    :param entries: `ffprobe` field selector passed to `-show_entries`.
+    :type entries: str
+    :param target: `ffprobe` target flag such as `-show_streams`.
+    :type target: str
+    :returns: Standard output emitted by `ffprobe`.
+    :rtype: str
+    :raises SubmasterError: If `ffprobe` exits with a non-zero status.
+    """
+    # Keep the probe command machine-readable so callers can parse JSON reliably.
     command = [
         "ffprobe",
         "-v",
@@ -29,6 +42,15 @@ def _run_probe(input_path: Path, entries: str, target: str) -> str:
 
 
 def has_video_stream(input_path: Path) -> bool:
+    """Check whether a media file contains at least one video stream.
+
+    :param input_path: Media file to inspect.
+    :type input_path: pathlib.Path
+    :returns: `True` when a video stream is present, otherwise `False`.
+    :rtype: bool
+    :raises SubmasterError: If probing the file fails.
+    """
+    # Ask ffprobe for stream types only; the CLI just needs to know whether video exists.
     output = _run_probe(input_path, "stream=codec_type", "-show_streams")
     payload = json.loads(output or "{}")
     streams = payload.get("streams", [])
@@ -36,6 +58,15 @@ def has_video_stream(input_path: Path) -> bool:
 
 
 def probe_duration_seconds(input_path: Path) -> float | None:
+    """Extract the media duration in seconds when available.
+
+    :param input_path: Media file to inspect.
+    :type input_path: pathlib.Path
+    :returns: Duration in seconds, or `None` when it cannot be parsed.
+    :rtype: float | None
+    :raises SubmasterError: If probing the file fails.
+    """
+    # Duration is optional metadata, so parsing errors degrade to `None` instead of hard failure.
     output = _run_probe(input_path, "format=duration", "-show_format")
     payload = json.loads(output or "{}")
     duration = payload.get("format", {}).get("duration")
@@ -48,6 +79,11 @@ def probe_duration_seconds(input_path: Path) -> float | None:
 
 
 def create_work_dir() -> Path:
+    """Create a temporary working directory for intermediate media files.
+
+    :returns: Newly created temporary directory path.
+    :rtype: pathlib.Path
+    """
     return Path(tempfile.mkdtemp(prefix="submaster-"))
 
 
@@ -57,6 +93,21 @@ def extract_audio(
     console: Console,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
 ) -> Path:
+    """Extract normalized mono WAV audio from the input media file.
+
+    :param source_path: Source media path containing the audio track.
+    :type source_path: pathlib.Path
+    :param destination_path: WAV path to create.
+    :type destination_path: pathlib.Path
+    :param console: Console used for progress and success output.
+    :type console: Console
+    :param sample_rate: Output sample rate for the normalized WAV file.
+    :type sample_rate: int
+    :returns: Path to the generated WAV file.
+    :rtype: pathlib.Path
+    :raises SubmasterError: If `ffmpeg` fails or does not create the destination file.
+    """
+    # Probe the duration first so the ffmpeg progress bar can show real-time completion.
     duration = probe_duration_seconds(source_path)
     command = [
         "ffmpeg",
@@ -79,6 +130,7 @@ def extract_audio(
         str(destination_path),
     ]
 
+    # Use machine-readable progress output so the console can render an updating progress bar.
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -94,6 +146,7 @@ def extract_audio(
     assert process.stdout is not None
     assert process.stderr is not None
 
+    # Parse ffmpeg key=value progress lines until the subprocess exits.
     while True:
         line = process.stdout.readline()
         if line == "" and process.poll() is not None:
@@ -116,6 +169,7 @@ def extract_audio(
             final_seconds = duration if duration is not None else latest_seconds
             progress.finish(final_seconds)
 
+    # Collect stderr only after the streaming loop so we preserve the progress experience.
     stderr_lines = process.stderr.read().splitlines()
     return_code = process.wait()
     if return_code != 0:
@@ -123,6 +177,7 @@ def extract_audio(
         error_message = "\n".join(line for line in stderr_lines if line.strip()) or "ffmpeg failed."
         raise SubmasterError(error_message)
 
+    # Treat a missing output file as a hard failure even if ffmpeg exited cleanly.
     if not destination_path.exists():
         raise SubmasterError("ffmpeg finished without producing a WAV file.")
 

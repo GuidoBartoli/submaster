@@ -8,4 +8,5 @@ build/
 dist/
 models/*.bin
 models/*.part
+models/*.gguf
 /.vscode
