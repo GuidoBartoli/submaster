@@ -63,6 +63,28 @@ WHISPER_MODEL_SPECS: dict[str, ModelSpec] = {
     ),
 }
 
+# whisper.cpp VAD models published by ggml-org.
+VAD_MODEL_SPECS: dict[str, ModelSpec] = {
+    "silero-v5.1.2": ModelSpec(
+        name="silero-v5.1.2",
+        filename="ggml-silero-v5.1.2.bin",
+        download_url=(
+            "https://huggingface.co/ggml-org/whisper-vad/resolve/main/"
+            "ggml-silero-v5.1.2.bin?download=true"
+        ),
+        description="Silero VAD v5.1.2 packaged for whisper.cpp speech segmentation.",
+    ),
+    "silero-v6.2.0": ModelSpec(
+        name="silero-v6.2.0",
+        filename="ggml-silero-v6.2.0.bin",
+        download_url=(
+            "https://huggingface.co/ggml-org/whisper-vad/resolve/main/"
+            "ggml-silero-v6.2.0.bin?download=true"
+        ),
+        description="Silero VAD v6.2.0 packaged for whisper.cpp speech segmentation.",
+    ),
+}
+
 # Tencent HY-MT translation models used by the optional translation stage.
 TRANSLATION_MODEL_SPECS: dict[str, ModelSpec] = {
     "small": ModelSpec(
@@ -100,7 +122,9 @@ MODEL_SPECS = WHISPER_MODEL_SPECS
 # Default CLI values shared across modules.
 DEFAULT_MODEL = "turbo"
 DEFAULT_TRANSLATION_MODEL = "small"
+DEFAULT_VAD_MODEL = "silero-v6.2.0"
 DEFAULT_LANGUAGE = "auto"
+DEFAULT_WHISPER_MAX_CONTEXT = 0
 DEFAULT_SAMPLE_RATE = 16_000
 DEFAULT_THREADS = 4
 

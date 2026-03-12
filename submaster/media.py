@@ -87,11 +87,24 @@ def create_work_dir() -> Path:
     return Path(tempfile.mkdtemp(prefix="submaster-"))
 
 
+def _format_ffmpeg_time(milliseconds: int) -> str:
+    """Format a millisecond timestamp for ffmpeg CLI arguments.
+
+    :param milliseconds: Timestamp value in milliseconds.
+    :type milliseconds: int
+    :returns: Timestamp rendered as fractional seconds.
+    :rtype: str
+    """
+    return f"{milliseconds / 1_000:.3f}"
+
+
 def extract_audio(
     source_path: Path,
     destination_path: Path,
     console: Console,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
+    clip_start_ms: int | None = None,
+    clip_duration_ms: int | None = None,
 ) -> Path:
     """Extract normalized mono WAV audio from the input media file.
 
@@ -103,32 +116,52 @@ def extract_audio(
     :type console: Console
     :param sample_rate: Output sample rate for the normalized WAV file.
     :type sample_rate: int
+    :param clip_start_ms: Optional source offset in milliseconds.
+    :type clip_start_ms: int | None
+    :param clip_duration_ms: Optional extracted duration in milliseconds.
+    :type clip_duration_ms: int | None
     :returns: Path to the generated WAV file.
     :rtype: pathlib.Path
     :raises SubmasterError: If `ffmpeg` fails or does not create the destination file.
     """
+    if clip_start_ms is not None and clip_start_ms < 0:
+        raise SubmasterError("Clip start time cannot be negative.")
+    if clip_duration_ms is not None and clip_duration_ms <= 0:
+        raise SubmasterError("Clip duration must be greater than zero.")
+
     # Probe the duration first so the ffmpeg progress bar can show real-time completion.
-    duration = probe_duration_seconds(source_path)
+    duration = (
+        clip_duration_ms / 1_000
+        if clip_duration_ms is not None
+        else probe_duration_seconds(source_path)
+    )
     command = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         "error",
         "-y",
-        "-i",
-        str(source_path),
-        "-vn",
-        "-ac",
-        "1",
-        "-ar",
-        str(sample_rate),
-        "-c:a",
-        "pcm_s16le",
-        "-progress",
-        "pipe:1",
-        "-nostats",
-        str(destination_path),
     ]
+    if clip_start_ms is not None:
+        command.extend(["-ss", _format_ffmpeg_time(clip_start_ms)])
+    command.extend(["-i", str(source_path)])
+    if clip_duration_ms is not None:
+        command.extend(["-t", _format_ffmpeg_time(clip_duration_ms)])
+    command.extend(
+        [
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            str(sample_rate),
+            "-c:a",
+            "pcm_s16le",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            str(destination_path),
+        ]
+    )
 
     # Use machine-readable progress output so the console can render an updating progress bar.
     process = subprocess.Popen(

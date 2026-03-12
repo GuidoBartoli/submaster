@@ -14,6 +14,7 @@
 - Downloads missing Whisper and HY-MT model files on demand into the local `models/` cache
 - Works on Linux, macOS, and Windows when `ffmpeg`, `whisper.cpp`, and `llama.cpp` are available
 - Prefers GPU execution in `--device auto` when the selected native runtime appears GPU-capable
+- Disables rolling Whisper text context by default to reduce long-form repetition loops
 - Produces normalized `.srt` output with clean cue numbering and timestamps
 
 ## Platform Support
@@ -228,6 +229,11 @@ Common patterns:
 ```bash
 submaster input.mp4 --model turbo --device gpu
 submaster input.mp4 --language en --model small
+submaster input.mp4 --range 00:10:00 00:12:30
+submaster input.mp4 --range 600 750 --translate-to it
+submaster input.mp4 --vad-model silero-v6.2.0
+submaster input.mp4 --vad-model ./models/ggml-silero-v6.2.0.bin
+submaster input.mp4 --max-context -1
 submaster input.mp4 --translate-to it --translation-model large
 submaster input.mp4 --translate-to ja --device gpu --llama-cli ./llama.cpp/build/bin/llama-cli
 submaster input.mkv --output ./subs/
@@ -240,6 +246,12 @@ submaster input.mp4 --show-model-info
 On Windows, `--output .\subs\`, `--whisper-cli .\whisper.cpp\build\bin\Release\whisper-cli.exe`, and `--llama-cli .\llama.cpp\build\bin\Release\llama-cli.exe` work as expected.
 
 If `--translate-to` is set, the written `.srt` file contains the translated subtitles. If you want both source-language and translated subtitle files, run the command twice with different output paths.
+
+`--range START END` limits extraction, transcription, and optional translation to the selected source clip while keeping subtitle timestamps aligned to the original video timeline. Accepted formats are `SS`, `MM:SS`, or `HH:MM:SS` with optional `.mmm` or `,mmm` milliseconds.
+
+`--max-context` controls how much previously decoded text `whisper.cpp` feeds back into later decode windows. Submaster defaults this to `0` to reduce repetition loops on long recordings. Pass `--max-context -1` to restore the upstream `whisper.cpp` behavior.
+
+`--vad-model VALUE` enables `whisper.cpp` voice activity detection. `VALUE` can be either a local file path or one of the built-in names `silero-v5.1.2` and `silero-v6.2.0`. Named VAD models are downloaded automatically into `models/` from the official `ggml-org/whisper-vad` repository on Hugging Face.
 
 ## Validation
 
@@ -260,6 +272,7 @@ python main.py --help
 - OpenAI Whisper: <https://github.com/openai/whisper>
 - whisper.cpp: <https://github.com/ggml-org/whisper.cpp>
 - whisper.cpp model files: <https://huggingface.co/ggerganov/whisper.cpp>
+- whisper.cpp VAD model files: <https://huggingface.co/ggml-org/whisper-vad/tree/main>
 - Tencent HY-MT1.5-1.8B-GGUF: <https://huggingface.co/tencent/HY-MT1.5-1.8B-GGUF>
 - Tencent HY-MT1.5-7B-GGUF: <https://huggingface.co/tencent/HY-MT1.5-7B-GGUF>
 - llama.cpp: <https://github.com/ggml-org/llama.cpp>

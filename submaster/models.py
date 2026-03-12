@@ -4,7 +4,13 @@ import os
 import urllib.request
 from pathlib import Path
 
-from .config import MODEL_SPECS, TRANSLATION_MODEL_SPECS, WHISPER_MODEL_SPECS, ModelSpec
+from .config import (
+    MODEL_SPECS,
+    TRANSLATION_MODEL_SPECS,
+    VAD_MODEL_SPECS,
+    WHISPER_MODEL_SPECS,
+    ModelSpec,
+)
 from .console import Console, format_bytes
 from .errors import SubmasterError
 
@@ -28,13 +34,17 @@ def resolve_named_model_spec(
     """
     # Normalize the key once so lookups behave consistently across CLI input variations.
     normalized = name.lower().strip()
-    try:
+    if normalized in model_specs:
         return model_specs[normalized]
-    except KeyError as exc:
-        choices = ", ".join(model_specs)
-        raise SubmasterError(
-            f"Unknown {model_label} '{name}'. Choose one of: {choices}."
-        ) from exc
+
+    for spec in model_specs.values():
+        if spec.filename.lower() == normalized:
+            return spec
+
+    choices = ", ".join(dict.fromkeys(spec.name for spec in model_specs.values()))
+    raise SubmasterError(
+        f"Unknown {model_label} '{name}'. Choose one of: {choices}."
+    )
 
 
 def resolve_model_spec(name: str) -> ModelSpec:
@@ -57,6 +67,17 @@ def resolve_translation_model_spec(name: str) -> ModelSpec:
     :rtype: ModelSpec
     """
     return resolve_named_model_spec(name, TRANSLATION_MODEL_SPECS, model_label="translation model")
+
+
+def resolve_vad_model_spec(name: str) -> ModelSpec:
+    """Resolve a VAD model name from the built-in VAD registry.
+
+    :param name: VAD model name from the CLI.
+    :type name: str
+    :returns: Matching VAD model specification.
+    :rtype: ModelSpec
+    """
+    return resolve_named_model_spec(name, VAD_MODEL_SPECS, model_label="VAD model")
 
 
 def ensure_model_available(
@@ -150,4 +171,26 @@ def ensure_translation_model_available(name: str, models_dir: Path, console: Con
         console,
         model_specs=TRANSLATION_MODEL_SPECS,
         model_label="translation model",
+    )
+
+
+def ensure_vad_model_available(name: str, models_dir: Path, console: Console) -> Path:
+    """Ensure that a VAD model exists locally.
+
+    :param name: VAD model name to prepare.
+    :type name: str
+    :param models_dir: Directory where VAD models are stored.
+    :type models_dir: pathlib.Path
+    :param console: Console used for status output and progress updates.
+    :type console: Console
+    :returns: Path to the ready-to-use VAD model file.
+    :rtype: pathlib.Path
+    :raises SubmasterError: If the model cannot be resolved or downloaded.
+    """
+    return ensure_model_available(
+        name,
+        models_dir,
+        console,
+        model_specs=VAD_MODEL_SPECS,
+        model_label="VAD model",
     )

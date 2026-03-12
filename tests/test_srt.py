@@ -32,6 +32,17 @@ class SrtTests(unittest.TestCase):
         )
         self.assertEqual(normalized, expected)
 
+    def test_normalize_srt_applies_optional_timestamp_offset(self) -> None:
+        """Verify that normalization can shift cue timings onto the source timeline."""
+        raw = "1\n00:00:00,500 --> 00:00:01,500\nhello\n"
+
+        normalized = normalize_srt(raw, offset_ms=10_000)
+
+        self.assertEqual(
+            normalized,
+            "1\r\n00:00:10,500 --> 00:00:11,500\r\nhello\r\n",
+        )
+
     def test_parse_srt_rejects_reverse_ranges(self) -> None:
         """Verify that cues ending before they start are rejected."""
         with self.assertRaises(SubmasterError):

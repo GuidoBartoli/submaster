@@ -531,6 +531,8 @@ class WhisperCppRunner:
         language: str,
         requested_device: str,
         threads: int,
+        max_context: int,
+        vad_model_path: Path | None,
         show_timings: bool,
         show_model_info: bool,
     ) -> Path:
@@ -548,6 +550,10 @@ class WhisperCppRunner:
         :type requested_device: str
         :param threads: Number of CPU threads to use.
         :type threads: int
+        :param max_context: Maximum prior-text token context to feed back into decoding.
+        :type max_context: int
+        :param vad_model_path: Optional VAD model path enabling speech-only processing.
+        :type vad_model_path: pathlib.Path | None
         :param show_timings: Whether to print extracted timing information.
         :type show_timings: bool
         :param show_model_info: Whether to print extracted model-load metadata.
@@ -573,10 +579,14 @@ class WhisperCppRunner:
             "-pp",
             "-t",
             str(max(1, threads)),
+            "-l",
+            language,
+            "-mc",
+            str(max_context),
         ]
 
-        if language.lower() != "auto":
-            command.extend(["-l", language])
+        if vad_model_path is not None:
+            command.extend(["--vad", "-vm", str(vad_model_path)])
 
         # Warn when the requested mode cannot be honored because the discovered build is CPU-only.
         if requested in {"auto", "gpu"} and device == "cpu" and not self.gpu_backends and platform.system() != "Darwin":

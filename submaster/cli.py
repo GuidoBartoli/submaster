@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from .config import (
     DEFAULT_MODEL,
     DEFAULT_THREADS,
     DEFAULT_TRANSLATION_MODEL,
+    DEFAULT_WHISPER_MAX_CONTEXT,
     MODEL_SPECS,
     TRANSLATION_MODEL_SPECS,
 )
@@ -17,10 +19,19 @@ from .console import Console
 from .errors import SubmasterError
 from .llama_cpp import LlamaCppRunner
 from .media import create_work_dir, extract_audio, has_video_stream
-from .models import ensure_model_available, ensure_translation_model_available
+from .models import (
+    ensure_model_available,
+    ensure_translation_model_available,
+    ensure_vad_model_available,
+    resolve_vad_model_spec,
+)
 from .srt import normalize_srt
 from .translation import SubtitleTranslator
 from .whisper_cpp import WhisperCppRunner
+
+
+_RANGE_INTEGER_RE = re.compile(r"^\d+$")
+_RANGE_SECONDS_RE = re.compile(r"^(?P<seconds>\d+)(?:[,.](?P<millis>\d{1,3}))?$")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,6 +90,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--whisper-cli",
         help="Path to a whisper.cpp executable such as whisper-cli.",
     )
+    parser.add_argument(
+        "--max-context",
+        type=int,
+        default=DEFAULT_WHISPER_MAX_CONTEXT,
+        help=(
+            "Maximum prior-text tokens fed back into whisper.cpp. "
+            "Use 0 to disable rolling text context; use -1 to restore the upstream default."
+        ),
+    )
+    parser.add_argument(
+        "--vad-model",
+        help=(
+            "Enable whisper.cpp VAD using a local model path or a built-in name "
+            "such as 'silero-v6.2.0'."
+        ),
+    )
+    parser.add_argument(
+        "--range",
+        nargs=2,
+        metavar=("START", "END"),
+        help=(
+            "Only transcribe and translate the given time range. "
+            "Accepted formats: SS, MM:SS, or HH:MM:SS with optional .mmm or ,mmm."
+        ),
+    )
 
     # Runtime flags tune performance and output handling without changing
     # transcript content.
@@ -126,6 +162,116 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to a llama.cpp executable such as llama-cli.",
     )
     return parser
+
+
+def parse_time_value(raw_value: str) -> int:
+    """Parse a user-facing time value into milliseconds.
+
+    :param raw_value: Time expression such as `75`, `01:15`, or `00:01:15.250`.
+    :type raw_value: str
+    :returns: Parsed millisecond value.
+    :rtype: int
+    :raises SubmasterError: If the value is malformed.
+    """
+    normalized = raw_value.strip()
+    if not normalized:
+        raise SubmasterError("Time values cannot be empty.")
+
+    parts = normalized.split(":")
+    if len(parts) > 3:
+        raise SubmasterError(
+            f"Invalid time value '{raw_value}'. Use SS, MM:SS, or HH:MM:SS."
+        )
+
+    last_match = _RANGE_SECONDS_RE.fullmatch(parts[-1])
+    if not last_match:
+        raise SubmasterError(
+            f"Invalid time value '{raw_value}'. Use optional milliseconds as .mmm or ,mmm."
+        )
+
+    seconds = int(last_match.group("seconds"))
+    millis_raw = last_match.group("millis") or ""
+    millis = int(millis_raw.ljust(3, "0")) if millis_raw else 0
+
+    hours = 0
+    minutes = 0
+
+    if len(parts) == 2:
+        if not _RANGE_INTEGER_RE.fullmatch(parts[0]):
+            raise SubmasterError(f"Invalid time value '{raw_value}'.")
+        minutes = int(parts[0])
+        if seconds >= 60:
+            raise SubmasterError(f"Seconds must be below 60 in '{raw_value}'.")
+    elif len(parts) == 3:
+        if not _RANGE_INTEGER_RE.fullmatch(parts[0]) or not _RANGE_INTEGER_RE.fullmatch(parts[1]):
+            raise SubmasterError(f"Invalid time value '{raw_value}'.")
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        if minutes >= 60 or seconds >= 60:
+            raise SubmasterError(
+                f"Minutes and seconds must be below 60 in '{raw_value}'."
+            )
+
+    total_seconds = hours * 3_600 + minutes * 60 + seconds
+    return total_seconds * 1_000 + millis
+
+
+def resolve_clip_range(raw_range: list[str] | None) -> tuple[int, int] | None:
+    """Resolve the optional `--range` argument into millisecond bounds.
+
+    :param raw_range: Raw parser values for `--range`, if provided.
+    :type raw_range: list[str] | None
+    :returns: Inclusive start / exclusive end millisecond bounds, or `None`.
+    :rtype: tuple[int, int] | None
+    :raises SubmasterError: If the range is malformed or empty.
+    """
+    if raw_range is None:
+        return None
+
+    start_ms = parse_time_value(raw_range[0])
+    end_ms = parse_time_value(raw_range[1])
+    if end_ms <= start_ms:
+        raise SubmasterError("Range end must be greater than range start.")
+    return start_ms, end_ms
+
+
+def resolve_vad_model_path(
+    raw_value: str | None,
+    models_dir: Path,
+    console: Console,
+) -> Path | None:
+    """Resolve a VAD model argument into a local file path.
+
+    :param raw_value: Raw CLI value for `--vad-model`, if provided.
+    :type raw_value: str | None
+    :param models_dir: Directory used for named model downloads.
+    :type models_dir: pathlib.Path
+    :param console: Console used for download status output.
+    :type console: Console
+    :returns: Resolved local VAD model path, or `None` when VAD is disabled.
+    :rtype: pathlib.Path | None
+    :raises SubmasterError: If the path is missing or the model name is unknown.
+    """
+    if raw_value is None:
+        return None
+
+    candidate = Path(raw_value).expanduser()
+    if candidate.exists():
+        if not candidate.is_file():
+            raise SubmasterError(f"VAD model path is not a file: {candidate.resolve()}")
+        if candidate.stat().st_size <= 0:
+            raise SubmasterError(f"VAD model file is empty: {candidate.resolve()}")
+        return candidate.resolve()
+
+    try:
+        spec = resolve_vad_model_spec(raw_value)
+    except SubmasterError as exc:
+        path_like = candidate.suffix or any(sep in raw_value for sep in (os.sep, os.altsep, "/", "\\") if sep)
+        if path_like:
+            raise SubmasterError(f"VAD model file does not exist: {candidate.resolve()}") from exc
+        raise
+
+    return ensure_vad_model_available(spec.name, models_dir, console)
 
 
 def resolve_output_path(source_path: Path, requested_output: str | None) -> Path:
@@ -207,10 +353,14 @@ def main(argv: list[str] | None = None) -> int:
         # Verify external tools and input/output paths before doing any
         # expensive setup.
         ensure_runtime_dependencies()
+        clip_range = resolve_clip_range(args.range)
+        models_dir = Path(args.models_dir).expanduser().resolve()
 
         input_path = Path(args.input).expanduser().resolve()
         if not input_path.exists():
             raise SubmasterError(f"Input file does not exist: {input_path}")
+
+        vad_model_path = resolve_vad_model_path(args.vad_model, models_dir, console)
 
         output_path = resolve_output_path(input_path, args.output).resolve()
         if output_path.exists() and not args.overwrite:
@@ -227,6 +377,12 @@ def main(argv: list[str] | None = None) -> int:
                 "Input must contain a video stream."
             )
         summary = f"Whisper: {args.model} | Language: {args.language} | Device: {args.device}"
+        if clip_range is not None:
+            summary += f" | Range: {args.range[0]} -> {args.range[1]}"
+        if args.max_context != DEFAULT_WHISPER_MAX_CONTEXT:
+            summary += f" | Max context: {args.max_context}"
+        if vad_model_path is not None:
+            summary += " | VAD: on"
         if args.translate_to:
             summary += f" | Translate to: {args.translate_to} ({args.translation_model})"
         console.info(summary)
@@ -238,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
             cli_path=Path(args.whisper_cli).expanduser() if args.whisper_cli else None,
         )
         model_path = ensure_model_available(
-            args.model, Path(args.models_dir).expanduser().resolve(), console
+            args.model, models_dir, console
         )
 
         # Extract normalized mono audio into a temporary workspace before
@@ -246,7 +402,19 @@ def main(argv: list[str] | None = None) -> int:
         work_dir = create_work_dir()
         audio_path = work_dir / f"{input_path.stem}.wav"
         console.note("Extracting audio track from video.")
-        extract_audio(input_path, audio_path, console)
+        clip_start_ms = clip_range[0] if clip_range is not None else None
+        clip_duration_ms = (
+            clip_range[1] - clip_range[0]
+            if clip_range is not None
+            else None
+        )
+        extract_audio(
+            input_path,
+            audio_path,
+            console,
+            clip_start_ms=clip_start_ms,
+            clip_duration_ms=clip_duration_ms,
+        )
 
         # Run transcription into the temp directory, then normalize the
         # emitted SRT content.
@@ -258,17 +426,22 @@ def main(argv: list[str] | None = None) -> int:
             language=args.language,
             requested_device=args.device,
             threads=args.threads,
+            max_context=args.max_context,
+            vad_model_path=vad_model_path,
             show_timings=args.show_timings,
             show_model_info=args.show_model_info,
         )
 
-        normalized_srt = normalize_srt(raw_srt_path.read_text(encoding="utf-8"))
+        normalized_srt = normalize_srt(
+            raw_srt_path.read_text(encoding="utf-8"),
+            offset_ms=clip_start_ms or 0,
+        )
         if args.translate_to:
             # Translation reuses the normalized SRT text so the
             # target-language output keeps clean cue formatting.
             translation_model_path = ensure_translation_model_available(
                 args.translation_model,
-                Path(args.models_dir).expanduser().resolve(),
+                models_dir,
                 console,
             )
             translation_runner = LlamaCppRunner(

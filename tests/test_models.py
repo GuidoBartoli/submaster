@@ -1,6 +1,10 @@
 import unittest
 
-from submaster.models import resolve_model_spec, resolve_translation_model_spec
+from submaster.models import (
+    resolve_model_spec,
+    resolve_translation_model_spec,
+    resolve_vad_model_spec,
+)
 
 
 class ModelSpecTests(unittest.TestCase):
@@ -19,6 +23,20 @@ class ModelSpecTests(unittest.TestCase):
 
         self.assertEqual(spec.filename, "HY-MT1.5-7B-Q4_K_M.gguf")
         self.assertIn("HY-MT1.5-7B-Q4_K_M.gguf", spec.download_url)
+
+    def test_vad_model_maps_to_whisper_vad_artifact(self) -> None:
+        """Verify that the named VAD alias resolves to the expected Hugging Face file."""
+        spec = resolve_vad_model_spec("silero-v6.2.0")
+
+        self.assertEqual(spec.filename, "ggml-silero-v6.2.0.bin")
+        self.assertIn("ggml-org/whisper-vad", spec.download_url)
+        self.assertIn("ggml-silero-v6.2.0.bin", spec.download_url)
+
+    def test_model_resolution_accepts_vad_filename_alias(self) -> None:
+        """Verify that VAD models can be resolved by their published filename."""
+        spec = resolve_vad_model_spec("ggml-silero-v5.1.2.bin")
+
+        self.assertEqual(spec.name, "silero-v5.1.2")
 
 
 if __name__ == "__main__":

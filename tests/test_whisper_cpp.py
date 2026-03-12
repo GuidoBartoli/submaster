@@ -200,7 +200,9 @@ class WhisperCppRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             output_base = root / "out"
+            vad_model = root / "vad.bin"
             output_base.with_suffix(".srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n", encoding="utf-8")
+            vad_model.write_text("vad", encoding="utf-8")
 
             progress_calls: list[tuple[str, float | None, str, bool]] = []
             progress_updates: list[tuple[float, str]] = []
@@ -287,6 +289,8 @@ class WhisperCppRunnerTests(unittest.TestCase):
                             language="auto",
                             requested_device="gpu",
                             threads=4,
+                            max_context=0,
+                            vad_model_path=vad_model,
                             show_timings=True,
                             show_model_info=False,
                         )
@@ -294,6 +298,12 @@ class WhisperCppRunnerTests(unittest.TestCase):
             self.assertEqual(len(popen_calls), 1)
             self.assertNotIn("-np", popen_calls[0])
             self.assertIn("-pp", popen_calls[0])
+            self.assertIn("-l", popen_calls[0])
+            self.assertIn("auto", popen_calls[0])
+            self.assertIn("-mc", popen_calls[0])
+            self.assertIn("0", popen_calls[0])
+            self.assertIn("--vad", popen_calls[0])
+            self.assertIn(str(vad_model), popen_calls[0])
             self.assertEqual(progress_calls, [("whisper", 100, "%", False)])
             self.assertEqual(progress_updates, [(15, ""), (100, ""), (100, "")])
 

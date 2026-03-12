@@ -133,13 +133,36 @@ def render_srt(cues: list[Cue]) -> str:
     return "\r\n\r\n".join(blocks) + "\r\n"
 
 
-def normalize_srt(raw_srt: str) -> str:
+def shift_cues(cues: list[Cue], offset_ms: int) -> list[Cue]:
+    """Return subtitle cues shifted by a fixed timestamp offset.
+
+    :param cues: Subtitle cues to shift.
+    :type cues: list[Cue]
+    :param offset_ms: Offset in milliseconds to add to every cue boundary.
+    :type offset_ms: int
+    :returns: New cue list with shifted timestamps.
+    :rtype: list[Cue]
+    :raises SubmasterError: If shifting would produce a negative timestamp.
+    """
+    shifted: list[Cue] = []
+    for cue in cues:
+        start_ms = cue.start_ms + offset_ms
+        end_ms = cue.end_ms + offset_ms
+        if start_ms < 0 or end_ms < 0:
+            raise SubmasterError("Shifted cue timestamps cannot be negative.")
+        shifted.append(Cue(start_ms=start_ms, end_ms=end_ms, text=cue.text.copy()))
+    return shifted
+
+
+def normalize_srt(raw_srt: str, offset_ms: int = 0) -> str:
     """Parse and re-render SRT text into the project's canonical format.
 
     :param raw_srt: Raw subtitle file contents to normalize.
     :type raw_srt: str
+    :param offset_ms: Optional millisecond offset added to every cue boundary.
+    :type offset_ms: int
     :returns: Canonically formatted SRT text.
     :rtype: str
     :raises SubmasterError: If the input cannot be parsed as valid SRT.
     """
-    return render_srt(parse_srt(raw_srt))
+    return render_srt(shift_cues(parse_srt(raw_srt), offset_ms))
