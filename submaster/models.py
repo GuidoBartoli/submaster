@@ -119,7 +119,7 @@ def ensure_model_available(
     if tmp_path.exists():
         tmp_path.unlink()
 
-    console.note(f"Downloading {model_label} '{spec.name}' to {model_path}")
+    console.info(f"Downloading {model_label} '{spec.name}' to {model_path}")
     request = urllib.request.Request(
         spec.download_url,
         headers={"User-Agent": "submaster/0.1 (+https://github.com/ggml-org/whisper.cpp)"},

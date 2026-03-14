@@ -401,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
         # invoking whisper.cpp.
         work_dir = create_work_dir()
         audio_path = work_dir / f"{input_path.stem}.wav"
-        console.note("Extracting audio track from video.")
+        console.info("Extracting audio track from video.")
         clip_start_ms = clip_range[0] if clip_range is not None else None
         clip_duration_ms = (
             clip_range[1] - clip_range[0]
