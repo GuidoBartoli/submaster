@@ -658,9 +658,56 @@ class WhisperCppRunner:
         if show_timings:
             self._print_timing_summary(total_elapsed, self._extract_timing_lines(output_lines))
 
-        # `whisper.cpp` writes the SRT next to the requested output basename.
-        srt_path = output_base.with_suffix(".srt")
-        if not srt_path.exists():
+        srt_path = self._resolve_srt_path(output_base, audio_path)
+        if srt_path is None:
             raise SubmasterError("whisper.cpp finished without creating an SRT file.")
 
         return srt_path
+
+    def _resolve_srt_path(self, output_base: Path, audio_path: Path) -> Path | None:
+        """Locate the generated SRT path across common `whisper.cpp` variants.
+
+        :param output_base: Requested output basename passed to `whisper.cpp`.
+        :type output_base: pathlib.Path
+        :param audio_path: Input audio path used for transcription.
+        :type audio_path: pathlib.Path
+        :returns: Resolved SRT path when found, otherwise `None`.
+        :rtype: pathlib.Path | None
+        """
+        expected_path = output_base.with_suffix(".srt")
+        fallback_candidates = [
+            expected_path,
+            audio_path.with_suffix(".srt"),
+            audio_path.with_suffix(f"{audio_path.suffix}.srt"),
+        ]
+
+        seen: set[Path] = set()
+        for candidate in fallback_candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate.exists():
+                if candidate != expected_path:
+                    self.console.warn(
+                        f"whisper.cpp wrote the SRT to '{candidate.name}' instead of '{expected_path.name}'."
+                    )
+                return candidate
+
+        try:
+            discovered_paths = sorted(
+                output_base.parent.glob("*.srt"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return None
+
+        if not discovered_paths:
+            return None
+
+        discovered_path = discovered_paths[0]
+        if discovered_path != expected_path:
+            self.console.warn(
+                f"whisper.cpp wrote the SRT to '{discovered_path.name}' instead of '{expected_path.name}'."
+            )
+        return discovered_path

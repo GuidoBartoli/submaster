@@ -4,6 +4,7 @@ import argparse
 import os
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from .config import (
@@ -34,6 +35,16 @@ _RANGE_INTEGER_RE = re.compile(r"^\d+$")
 _RANGE_SECONDS_RE = re.compile(r"^(?P<seconds>\d+)(?:[,.](?P<millis>\d{1,3}))?$")
 
 
+@dataclass
+class ProcessingResources:
+    """Bundle reusable runtime state for one CLI invocation."""
+
+    whisper_runner: WhisperCppRunner
+    whisper_model_path: Path
+    translator: SubtitleTranslator | None
+    vad_model_path: Path | None
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser for the `submaster` executable.
 
@@ -45,19 +56,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="submaster",
         description=(
-            "Create synchronized .srt subtitles from a video file using whisper.cpp, "
-            "with optional offline translation via llama.cpp."
+            "Create synchronized .srt subtitles from a video file, or batch-process "
+            "every video file in a folder, using whisper.cpp with optional offline "
+            "translation via llama.cpp."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     # Core input/output options define the source media file and final
     # subtitle location.
-    parser.add_argument("input", help="Path to a video file.")
+    parser.add_argument(
+        "input",
+        help="Path to a video file, or a folder when --batch is set.",
+    )
     parser.add_argument(
         "-o",
         "--output",
-        help="Output .srt file path or directory. Defaults to the input stem next to the source file.",
+        help=(
+            "Output .srt file path or directory. Defaults to the input stem next to "
+            "the source file. In --batch mode this must be a directory."
+        ),
+    )
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="Treat the input path as a folder and process every contained video file.",
     )
 
     # Whisper-specific options control transcription quality, language
@@ -320,6 +343,248 @@ def resolve_output_path(source_path: Path, requested_output: str | None) -> Path
     return output_path
 
 
+def resolve_batch_output_dir(requested_output: str | None) -> Path | None:
+    """Resolve the optional batch output root directory.
+
+    :param requested_output: Raw `--output` value supplied by the user, if any.
+    :type requested_output: str | None
+    :returns: Output directory used for batch subtitles, or `None` to keep them beside each source.
+    :rtype: pathlib.Path | None
+    :raises SubmasterError: If the user points batch mode at a single `.srt` file.
+    """
+    if not requested_output:
+        return None
+
+    output_path = Path(requested_output).expanduser()
+    trailing_separators = {sep for sep in (os.sep, os.altsep, "/", "\\") if sep}
+    has_trailing_separator = any(requested_output.endswith(sep) for sep in trailing_separators)
+
+    if output_path.exists():
+        if not output_path.is_dir():
+            raise SubmasterError(
+                "Batch mode requires --output to be a directory path, not a single .srt file."
+            )
+        return output_path
+
+    if output_path.suffix.lower() == ".srt" and not has_trailing_separator:
+        raise SubmasterError(
+            "Batch mode requires --output to be a directory path, not a single .srt file."
+        )
+
+    if has_trailing_separator:
+        trimmed_output = requested_output.rstrip("/\\")
+        if trimmed_output:
+            return Path(trimmed_output).expanduser()
+    return output_path
+
+
+def discover_batch_inputs(input_dir: Path) -> tuple[list[Path], int]:
+    """Find direct child files that expose a video stream.
+
+    :param input_dir: Folder whose regular files should be probed with `ffprobe`.
+    :type input_dir: pathlib.Path
+    :returns: Resolved video file paths and a count of skipped non-video or unreadable files.
+    :rtype: tuple[list[pathlib.Path], int]
+    """
+    media_paths: list[Path] = []
+    skipped_count = 0
+
+    for candidate in sorted(input_dir.iterdir(), key=lambda path: path.name.lower()):
+        if not candidate.is_file():
+            continue
+        try:
+            if has_video_stream(candidate):
+                media_paths.append(candidate.resolve())
+            else:
+                skipped_count += 1
+        except SubmasterError:
+            skipped_count += 1
+
+    return media_paths, skipped_count
+
+
+def resolve_batch_output_path(source_path: Path, output_dir: Path | None) -> Path:
+    """Build the destination subtitle path for one batch input."""
+    if output_dir is None:
+        return source_path.with_suffix(".srt")
+    return output_dir / f"{source_path.stem}.srt"
+
+
+def build_batch_jobs(
+    input_paths: list[Path],
+    output_dir: Path | None,
+) -> list[tuple[Path, Path]]:
+    """Pair each batch input with its resolved subtitle output path.
+
+    :param input_paths: Video files selected for batch processing.
+    :type input_paths: list[pathlib.Path]
+    :param output_dir: Optional shared output directory.
+    :type output_dir: pathlib.Path | None
+    :returns: Ordered `(input_path, output_path)` pairs.
+    :rtype: list[tuple[pathlib.Path, pathlib.Path]]
+    :raises SubmasterError: If two inputs would write the same subtitle file.
+    """
+    jobs: list[tuple[Path, Path]] = []
+    seen_outputs: dict[Path, Path] = {}
+
+    for input_path in input_paths:
+        output_path = resolve_batch_output_path(input_path, output_dir).resolve()
+        conflicting_input = seen_outputs.get(output_path)
+        if conflicting_input is not None:
+            raise SubmasterError(
+                "Batch mode would write multiple inputs to the same subtitle path: "
+                f"{conflicting_input.name} and {input_path.name} -> {output_path}"
+            )
+        seen_outputs[output_path] = input_path
+        jobs.append((input_path, output_path))
+
+    return jobs
+
+
+def build_processing_summary(
+    args: argparse.Namespace,
+    clip_range: tuple[int, int] | None,
+    vad_model_path: Path | None,
+) -> str:
+    """Render a one-line summary for the current transcription job."""
+    summary = f"Whisper: {args.model} | Language: {args.language} | Device: {args.device}"
+    if clip_range is not None:
+        summary += f" | Range: {args.range[0]} -> {args.range[1]}"
+    if args.max_context != DEFAULT_WHISPER_MAX_CONTEXT:
+        summary += f" | Max context: {args.max_context}"
+    if vad_model_path is not None:
+        summary += " | VAD: on"
+    if args.translate_to:
+        summary += f" | Translate to: {args.translate_to} ({args.translation_model})"
+    return summary
+
+
+def prepare_processing_resources(
+    args: argparse.Namespace,
+    models_dir: Path,
+    console: Console,
+) -> ProcessingResources:
+    """Resolve models and native runners that can be reused across jobs."""
+    vad_model_path = resolve_vad_model_path(args.vad_model, models_dir, console)
+    whisper_runner = WhisperCppRunner(
+        console=console,
+        cli_path=Path(args.whisper_cli).expanduser() if args.whisper_cli else None,
+    )
+    whisper_model_path = ensure_model_available(args.model, models_dir, console)
+
+    translator: SubtitleTranslator | None = None
+    if args.translate_to:
+        translation_model_path = ensure_translation_model_available(
+            args.translation_model,
+            models_dir,
+            console,
+        )
+        translation_runner = LlamaCppRunner(
+            console=console,
+            cli_path=Path(args.llama_cli).expanduser() if args.llama_cli else None,
+        )
+        translator = SubtitleTranslator(
+            console=console,
+            runner=translation_runner,
+            model_path=translation_model_path,
+            target_language=args.translate_to,
+            source_language=args.language,
+            requested_device=args.device,
+            threads=args.threads,
+        )
+
+    return ProcessingResources(
+        whisper_runner=whisper_runner,
+        whisper_model_path=whisper_model_path,
+        translator=translator,
+        vad_model_path=vad_model_path,
+    )
+
+
+def process_media_file(
+    input_path: Path,
+    output_path: Path,
+    args: argparse.Namespace,
+    console: Console,
+    resources: ProcessingResources,
+    clip_range: tuple[int, int] | None,
+    *,
+    job_index: int | None = None,
+    job_total: int | None = None,
+    skip_video_validation: bool = False,
+) -> None:
+    """Run the full subtitle pipeline for one media file."""
+    work_dir: Path | None = None
+
+    try:
+        if output_path.exists() and not args.overwrite:
+            raise SubmasterError(
+                f"Output file already exists: {output_path}. Use --overwrite to replace it."
+            )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        detail = f"'{input_path.name}' -> '{output_path.name}'"
+        if job_index is not None and job_total is not None:
+            detail = f"[{job_index}/{job_total}] {detail}"
+        console.banner(">>> Submaster <<<", detail)
+
+        if not skip_video_validation and not has_video_stream(input_path):
+            raise SubmasterError("Input must contain a video stream.")
+        console.info(build_processing_summary(args, clip_range, resources.vad_model_path))
+
+        work_dir = create_work_dir()
+        # Keep intermediate filenames simple so native runtimes never have to
+        # deal with user-facing punctuation or long source names.
+        audio_path = work_dir / "input.wav"
+        console.info("Extracting audio track from video.")
+        clip_start_ms = clip_range[0] if clip_range is not None else None
+        clip_duration_ms = (
+            clip_range[1] - clip_range[0]
+            if clip_range is not None
+            else None
+        )
+        extract_audio(
+            input_path,
+            audio_path,
+            console,
+            clip_start_ms=clip_start_ms,
+            clip_duration_ms=clip_duration_ms,
+        )
+
+        output_base = work_dir / "transcript"
+        raw_srt_path = resources.whisper_runner.run(
+            audio_path=audio_path,
+            model_path=resources.whisper_model_path,
+            output_base=output_base,
+            language=args.language,
+            requested_device=args.device,
+            threads=args.threads,
+            max_context=args.max_context,
+            vad_model_path=resources.vad_model_path,
+            show_timings=args.show_timings,
+            show_model_info=args.show_model_info,
+        )
+
+        normalized_srt = normalize_srt(
+            raw_srt_path.read_text(encoding="utf-8"),
+            offset_ms=clip_start_ms or 0,
+        )
+        if resources.translator is not None:
+            normalized_srt = resources.translator.translate_srt(normalized_srt)
+
+        output_path.write_text(normalized_srt, encoding="utf-8", newline="")
+
+        if args.keep_audio:
+            kept_audio = output_path.with_name(f"{output_path.stem}.normalized.wav")
+            shutil.copy2(audio_path, kept_audio)
+            console.success(f"Kept normalized audio at {kept_audio}")
+
+        console.success(f"Subtitle written to {output_path}")
+    finally:
+        if work_dir is not None:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+
 def ensure_runtime_dependencies() -> None:
     """Validate that required external binaries are available on `PATH`.
 
@@ -347,7 +612,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     console = Console()
-    work_dir: Path | None = None
 
     try:
         # Verify external tools and input/output paths before doing any
@@ -360,115 +624,85 @@ def main(argv: list[str] | None = None) -> int:
         if not input_path.exists():
             raise SubmasterError(f"Input file does not exist: {input_path}")
 
-        vad_model_path = resolve_vad_model_path(args.vad_model, models_dir, console)
+        if args.batch:
+            if not input_path.is_dir():
+                raise SubmasterError(
+                    f"Batch mode requires a folder input, but got: {input_path}"
+                )
+
+            output_dir = resolve_batch_output_dir(args.output)
+            if output_dir is not None:
+                output_dir = output_dir.resolve()
+
+            console.info(f"Scanning batch folder: {input_path}")
+            batch_inputs, skipped_count = discover_batch_inputs(input_path)
+            if not batch_inputs:
+                raise SubmasterError(
+                    f"No video files were found in batch folder: {input_path}"
+                )
+
+            jobs = build_batch_jobs(batch_inputs, output_dir)
+            skipped_suffix = (
+                f"; skipped {skipped_count} non-video or unreadable file(s)"
+                if skipped_count
+                else ""
+            )
+            console.info(
+                f"Found {len(jobs)} video file(s) to process{skipped_suffix}."
+            )
+            console.banner("----------------------------------")
+
+            resources = prepare_processing_resources(args, models_dir, console)
+            failures = 0
+
+            for index, (media_path, output_path) in enumerate(jobs, start=1):
+                try:
+                    process_media_file(
+                        media_path,
+                        output_path,
+                        args,
+                        console,
+                        resources,
+                        clip_range,
+                        job_index=index,
+                        job_total=len(jobs),
+                        skip_video_validation=True,
+                    )
+                except SubmasterError as exc:
+                    failures += 1
+                    console.dismiss_progress()
+                    console.error(f"[{index}/{len(jobs)}] {media_path.name}: {exc}")
+
+            console.banner("----------------------------------")
+            if failures:
+                console.warn(
+                    f"Batch finished with {len(jobs) - failures} success(es) and {failures} failure(s)."
+                )
+                return 1
+
+            console.success(
+                f"Batch finished successfully: {len(jobs)} subtitle file(s) written."
+            )
+            return 0
+
+        if input_path.is_dir():
+            raise SubmasterError(
+                "Input path is a directory. Use --batch to process a folder."
+            )
 
         output_path = resolve_output_path(input_path, args.output).resolve()
-        if output_path.exists() and not args.overwrite:
-            raise SubmasterError(
-                f"Output file already exists: {output_path}. Use --overwrite to replace it."
-            )
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Surface a short execution summary before starting media inspection
-        # and model loading.
-        console.banner(">>> Submaster <<<", f"'{input_path.name}' -> '{output_path.name}'")
         if not has_video_stream(input_path):
-            raise SubmasterError(
-                "Input must contain a video stream."
-            )
-        summary = f"Whisper: {args.model} | Language: {args.language} | Device: {args.device}"
-        if clip_range is not None:
-            summary += f" | Range: {args.range[0]} -> {args.range[1]}"
-        if args.max_context != DEFAULT_WHISPER_MAX_CONTEXT:
-            summary += f" | Max context: {args.max_context}"
-        if vad_model_path is not None:
-            summary += " | VAD: on"
-        if args.translate_to:
-            summary += f" | Translate to: {args.translate_to} ({args.translation_model})"
-        console.info(summary)
-
-        # Prepare the transcription runner and ensure the requested whisper
-        # model is ready locally.
-        runner = WhisperCppRunner(
-            console=console,
-            cli_path=Path(args.whisper_cli).expanduser() if args.whisper_cli else None,
-        )
-        model_path = ensure_model_available(
-            args.model, models_dir, console
-        )
-
-        # Extract normalized mono audio into a temporary workspace before
-        # invoking whisper.cpp.
-        work_dir = create_work_dir()
-        audio_path = work_dir / f"{input_path.stem}.wav"
-        console.info("Extracting audio track from video.")
-        clip_start_ms = clip_range[0] if clip_range is not None else None
-        clip_duration_ms = (
-            clip_range[1] - clip_range[0]
-            if clip_range is not None
-            else None
-        )
-        extract_audio(
+            raise SubmasterError("Input must contain a video stream.")
+        resources = prepare_processing_resources(args, models_dir, console)
+        process_media_file(
             input_path,
-            audio_path,
+            output_path,
+            args,
             console,
-            clip_start_ms=clip_start_ms,
-            clip_duration_ms=clip_duration_ms,
+            resources,
+            clip_range,
+            skip_video_validation=True,
         )
-
-        # Run transcription into the temp directory, then normalize the
-        # emitted SRT content.
-        output_base = work_dir / output_path.stem
-        raw_srt_path = runner.run(
-            audio_path=audio_path,
-            model_path=model_path,
-            output_base=output_base,
-            language=args.language,
-            requested_device=args.device,
-            threads=args.threads,
-            max_context=args.max_context,
-            vad_model_path=vad_model_path,
-            show_timings=args.show_timings,
-            show_model_info=args.show_model_info,
-        )
-
-        normalized_srt = normalize_srt(
-            raw_srt_path.read_text(encoding="utf-8"),
-            offset_ms=clip_start_ms or 0,
-        )
-        if args.translate_to:
-            # Translation reuses the normalized SRT text so the
-            # target-language output keeps clean cue formatting.
-            translation_model_path = ensure_translation_model_available(
-                args.translation_model,
-                models_dir,
-                console,
-            )
-            translation_runner = LlamaCppRunner(
-                console=console,
-                cli_path=Path(args.llama_cli).expanduser() if args.llama_cli else None,
-            )
-            translator = SubtitleTranslator(
-                console=console,
-                runner=translation_runner,
-                model_path=translation_model_path,
-                target_language=args.translate_to,
-                source_language=args.language,
-                requested_device=args.device,
-                threads=args.threads,
-            )
-            normalized_srt = translator.translate_srt(normalized_srt)
-
-        # Persist the final subtitle file and optionally keep the extracted
-        # WAV for debugging or reuse.
-        output_path.write_text(normalized_srt, encoding="utf-8", newline="")
-
-        if args.keep_audio:
-            kept_audio = output_path.with_name(f"{output_path.stem}.normalized.wav")
-            shutil.copy2(audio_path, kept_audio)
-            console.success(f"Kept normalized audio at {kept_audio}")
-
-        console.success(f"Subtitle written to {output_path}")
         return 0
     except KeyboardInterrupt:
         # Map user cancellation to the conventional shell exit code.
@@ -481,7 +715,3 @@ def main(argv: list[str] | None = None) -> int:
         console.dismiss_progress()
         console.error(str(exc))
         return 1
-    finally:
-        # Temporary media artifacts should never survive beyond the current CLI run.
-        if work_dir is not None:
-            shutil.rmtree(work_dir, ignore_errors=True)

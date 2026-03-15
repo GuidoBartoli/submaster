@@ -5,9 +5,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from submaster.cli import (
+    build_batch_jobs,
     build_parser,
     main,
     parse_time_value,
+    resolve_batch_output_dir,
     resolve_clip_range,
     resolve_output_path,
     resolve_vad_model_path,
@@ -71,6 +73,18 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.max_context, 0)
         self.assertEqual(args.vad_model, "silero-v6.2.0")
 
+    def test_parser_accepts_batch_flag(self) -> None:
+        """Verify that folder processing can be enabled from the CLI."""
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "videos",
+                "--batch",
+            ]
+        )
+
+        self.assertTrue(args.batch)
+
     def test_parse_time_value_accepts_flexible_timestamp_formats(self) -> None:
         """Verify that user-facing clip timestamps normalize to milliseconds."""
         self.assertEqual(parse_time_value("75.5"), 75_500)
@@ -117,6 +131,98 @@ class CliTests(unittest.TestCase):
         resolved = resolve_output_path(source_path, "subs\\")
 
         self.assertEqual(resolved, Path("subs") / "input.srt")
+
+    def test_resolve_batch_output_dir_rejects_single_srt_path(self) -> None:
+        """Verify that batch mode only accepts directory outputs."""
+        with self.assertRaisesRegex(SubmasterError, "directory path"):
+            resolve_batch_output_dir("subs/output.srt")
+
+    def test_build_batch_jobs_rejects_duplicate_output_stems(self) -> None:
+        """Verify that two batch inputs cannot target the same output subtitle path."""
+        input_paths = [
+            Path("/tmp/movie.mp4"),
+            Path("/tmp/movie.mkv"),
+        ]
+
+        with self.assertRaisesRegex(SubmasterError, "same subtitle path"):
+            build_batch_jobs(input_paths, None)
+
+    def test_main_rejects_directory_without_batch(self) -> None:
+        """Verify that directory inputs require explicit batch mode."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "videos"
+            input_dir.mkdir()
+
+            with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
+                exit_code = main([str(input_dir)])
+
+        self.assertEqual(exit_code, 1)
+
+    def test_main_batch_processes_every_detected_video_file(self) -> None:
+        """Verify that batch mode processes each direct child video file once."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "videos"
+            output_dir = Path(tmpdir) / "subs"
+            input_dir.mkdir()
+            alpha_path = input_dir / "alpha.mp4"
+            bravo_path = input_dir / "bravo.customext"
+            notes_path = input_dir / "notes.txt"
+            alpha_path.write_bytes(b"fake")
+            bravo_path.write_bytes(b"fake")
+            notes_path.write_text("ignore me", encoding="utf-8")
+
+            processed_jobs: list[tuple[Path, Path, int, int, bool]] = []
+
+            def fake_has_video_stream(candidate: Path) -> bool:
+                return candidate.name != "notes.txt"
+
+            def fake_process_media_file(
+                input_path,
+                output_path,
+                args,
+                console,
+                resources,
+                clip_range,
+                *,
+                job_index=None,
+                job_total=None,
+                skip_video_validation=False,
+            ) -> None:
+                processed_jobs.append(
+                    (
+                        input_path,
+                        output_path,
+                        job_index,
+                        job_total,
+                        skip_video_validation,
+                    )
+                )
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+
+            with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
+                with patch("submaster.cli.has_video_stream", side_effect=fake_has_video_stream):
+                    with patch("submaster.cli.prepare_processing_resources", return_value=SimpleNamespace()):
+                        with patch("submaster.cli.process_media_file", side_effect=fake_process_media_file):
+                            exit_code = main(
+                                [
+                                    str(input_dir),
+                                    "--batch",
+                                    "--output",
+                                    str(output_dir),
+                                ]
+                            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                processed_jobs,
+                [
+                    (alpha_path.resolve(), (output_dir / "alpha.srt").resolve(), 1, 2, True),
+                    (bravo_path.resolve(), (output_dir / "bravo.srt").resolve(), 2, 2, True),
+                ],
+            )
+            self.assertTrue((output_dir / "alpha.srt").exists())
+            self.assertTrue((output_dir / "bravo.srt").exists())
 
     def test_main_invokes_translation_when_requested(self) -> None:
         """Verify that the translation pipeline runs when `--translate-to` is set."""
@@ -226,7 +332,7 @@ class CliTests(unittest.TestCase):
             whisper_runner.run.assert_called_once_with(
                 audio_path=work_dir / "input.wav",
                 model_path=Path(tmpdir) / "whisper.bin",
-                output_base=work_dir / "output",
+                output_base=work_dir / "transcript",
                 language="auto",
                 requested_device="auto",
                 threads=unittest.mock.ANY,

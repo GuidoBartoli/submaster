@@ -214,5 +214,5 @@ def extract_audio(
     if not destination_path.exists():
         raise SubmasterError("ffmpeg finished without producing a WAV file.")
 
-    console.success(f"Prepared audio: {destination_path}")
+    console.info(f"Prepared audio: {destination_path}")
     return destination_path

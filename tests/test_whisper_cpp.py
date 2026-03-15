@@ -307,6 +307,29 @@ class WhisperCppRunnerTests(unittest.TestCase):
             self.assertEqual(progress_calls, [("whisper", 100, "%", False)])
             self.assertEqual(progress_updates, [(15, ""), (100, ""), (100, "")])
 
+    def test_resolve_srt_path_accepts_audio_suffix_fallback_name(self) -> None:
+        """Verify that alternate `whisper.cpp` SRT naming schemes are accepted."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            audio_path = root / "input.wav"
+            output_base = root / "transcript"
+            fallback_srt_path = audio_path.with_suffix(".wav.srt")
+            warnings: list[str] = []
+
+            fallback_srt_path.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nhi\n",
+                encoding="utf-8",
+            )
+
+            runner = WhisperCppRunner.__new__(WhisperCppRunner)
+            runner.console = SimpleNamespace(warn=lambda message: warnings.append(message))
+
+            resolved = runner._resolve_srt_path(output_base, audio_path)
+
+        self.assertEqual(resolved, fallback_srt_path)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("input.wav.srt", warnings[0])
+
 
 if __name__ == "__main__":
     unittest.main()
