@@ -8,6 +8,7 @@
 ## Features
 
 - Accepts common video formats such as MP4, MKV, MOV, AVI, and RMVB
+- Batch-processes every direct child video file in a folder without relying on a fixed extension allowlist
 - Extracts and normalizes mono WAV audio using `ffmpeg` before transcription
 - Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
 - Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
@@ -218,6 +219,12 @@ Basic transcription:
 submaster input.mp4
 ```
 
+Batch-process all video files in a folder:
+
+```bash
+submaster ./videos --batch
+```
+
 Translate the generated subtitles into Italian:
 
 ```bash
@@ -237,6 +244,7 @@ submaster input.mp4 --max-context -1
 submaster input.mp4 --translate-to it --translation-model large
 submaster input.mp4 --translate-to ja --device gpu --llama-cli ./llama.cpp/build/bin/llama-cli
 submaster input.mkv --output ./subs/
+submaster ./videos --batch --output ./subs/
 submaster input.mov --keep-audio
 submaster input.mp4 --whisper-cli ./whisper.cpp/build/bin/whisper-cli
 submaster input.mp4 --show-timings
@@ -248,6 +256,8 @@ On Windows, `--output .\subs\`, `--whisper-cli .\whisper.cpp\build\bin\Release\w
 If `--translate-to` is set, the written `.srt` file contains the translated subtitles. If you want both source-language and translated subtitle files, run the command twice with different output paths.
 
 `--range START END` limits extraction, transcription, and optional translation to the selected source clip while keeping subtitle timestamps aligned to the original video timeline. Accepted formats are `SS`, `MM:SS`, or `HH:MM:SS` with optional `.mmm` or `,mmm` milliseconds.
+
+`--batch` treats the positional input as a folder and probes each direct child file with `ffprobe`. Files that do not expose a video stream are skipped. Batch outputs default to `<source-stem>.srt` next to each source file, or into a shared directory when `--output DIR` is provided.
 
 `--max-context` controls how much previously decoded text `whisper.cpp` feeds back into later decode windows. Submaster defaults this to `0` to reduce repetition loops on long recordings. Pass `--max-context -1` to restore the upstream `whisper.cpp` behavior.
 
