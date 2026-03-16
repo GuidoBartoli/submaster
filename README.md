@@ -5,6 +5,10 @@
 
 **SubMaster** is a command-line Python application that takes a video as input and transcribes spoken dialogues into a synchronized subtitle file with optional translation into another language.
 
+<p align="center">
+<img width="721" height="166" alt="image" src="https://github.com/user-attachments/assets/f3e6be8f-f59b-4ac2-a940-d78cd33d9040" />
+</p>
+
 ## Features
 
 - Accepts common video formats such as MP4, MKV, MOV, AVI, and RMVB
