@@ -281,6 +281,34 @@ Check the CLI wiring:
 python main.py --help
 ```
 
+## Standalone Chapter Utility
+
+This repository also includes a separate helper script at [`scripts/add_chapters.py`](scripts/add_chapters.py). It stays outside the main `submaster` CLI so it can be run independently when you only want to embed chapter markers from a text file into an existing video.
+
+Usage:
+
+```bash
+python scripts/add_chapters.py <input> <chapters> <output>
+```
+
+Arguments:
+
+- `input`: Input video file in any format supported by `ffmpeg`
+- `chapters`: Text file where each non-empty line contains `HH:MM:SS Title`
+- `output`: Output video file to create; `.mp4` is added automatically if you omit a suffix
+
+Example chapter file:
+
+```text
+00:00:00 Introduction
+00:23:20 Start
+00:40:30 First Performance
+00:40:56 Break
+01:04:44 Second Performance
+01:24:45 Crowd Shots
+01:27:45 Credits
+```
+
 ## Upstream References
 
 - OpenAI Whisper: <https://github.com/openai/whisper>
