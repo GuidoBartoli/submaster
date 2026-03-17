@@ -40,43 +40,13 @@ The bundled fallback is only for `whisper.cpp` on Linux `x86_64`. Translation al
 - a working `whisper.cpp` executable (`whisper-cli` recommended)
 - a working `llama.cpp` executable (`llama-cli` recommended) if subtitle translation is enabled
 
-`submaster` has no third-party Python runtime dependencies. The package metadata in [`pyproject.toml`](pyproject.toml) allows Python `>=3.10`. The provided Conda environment in [`environment.yml`](environment.yml) uses Python 3.12 as the default tested setup.
+`submaster` has no third-party Python runtime dependencies. The package metadata in [`pyproject.toml`](pyproject.toml) allows Python `>=3.10`. Python 3.12 is the default tested setup in this repository.
 
 ## Installation
 
-### Conda Environment (Recommended)
+### Python Package
 
-The simplest cross-platform setup is the provided Conda environment:
-
-```bash
-conda env create -f environment.yml
-conda activate submaster
-```
-
-It installs Python 3.12, `ffmpeg`, `ffprobe`, `whisper.cpp`, `llama.cpp`, build tools, and the current project in editable mode.
-
-Verify the toolchain:
-
-```bash
-python --version
-ffmpeg -version
-ffprobe -version
-whisper-cli -h
-llama-cli -h
-submaster --help
-```
-
-If `ffmpeg`, `ffprobe`, `whisper-cli`, or `llama-cli` is still missing:
-
-```bash
-conda install -n submaster -c conda-forge ffmpeg
-conda install -n submaster -c conda-forge whisper.cpp
-conda install -n submaster -c conda-forge llama.cpp
-```
-
-### Manual pip installation
-
-If you are not using the Conda environment, install the package manually:
+Install the package manually:
 
 ```bash
 python -m pip install -e .
@@ -88,6 +58,17 @@ Or run it without installation:
 
 ```bash
 python main.py --help
+```
+
+Verify the toolchain:
+
+```bash
+python --version
+ffmpeg -version
+ffprobe -version
+whisper-cli -h
+llama-cli -h
+submaster --help
 ```
 
 ## Translation Backend
@@ -190,7 +171,7 @@ Windows PowerShell equivalent:
 submaster input.mp4 --translate-to it --llama-cli .\llama.cpp\build\bin\Release\llama-cli.exe
 ```
 
-If you choose not to use Conda, install `ffmpeg`, `git`, `cmake`, and `ninja` first:
+Install `ffmpeg`, `git`, `cmake`, and `ninja` first:
 
 - Ubuntu or Debian: `sudo apt install ffmpeg git cmake ninja-build build-essential`
 - macOS with Homebrew: `brew install ffmpeg git cmake ninja`
