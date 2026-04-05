@@ -192,6 +192,14 @@ class Console:
         """
         self.line(f"{_style(self.color, CYAN, '[STEP]')} {message}")
 
+    def emphasis(self, message: str) -> None:
+        """Print an emphasized line for major per-item progress updates.
+
+        :param message: Message content to print.
+        :type message: str
+        """
+        self.line(_style(self.color, BOLD, message))
+
     def success(self, message: str) -> None:
         """Print a success message.
 

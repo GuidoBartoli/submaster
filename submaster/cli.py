@@ -526,7 +526,9 @@ def process_media_file(
         detail = f"'{input_path.name}' -> '{output_path.name}'"
         if job_index is not None and job_total is not None:
             detail = f"[{job_index}/{job_total}] {detail}"
-        console.banner(">>> Submaster <<<", detail)
+            console.emphasis(detail)
+        else:
+            console.line(detail)
 
         if not skip_video_validation and not has_video_stream(input_path):
             raise SubmasterError("Input must contain a video stream.")
@@ -614,6 +616,7 @@ def main(argv: list[str] | None = None) -> int:
     console = Console()
 
     try:
+        console.banner(">>> Submaster <<<")
         # Verify external tools and input/output paths before doing any
         # expensive setup.
         ensure_runtime_dependencies()

@@ -2,7 +2,7 @@ import io
 import unittest
 from unittest.mock import patch
 
-from submaster.console import Console, ORANGE, RESET
+from submaster.console import BOLD, Console, ORANGE, RESET
 
 
 class ConsoleTests(unittest.TestCase):
@@ -55,6 +55,21 @@ class ConsoleTests(unittest.TestCase):
         self.assertIn("[whisper]", output)
         self.assertIn("15.00% 00:01 ETA 00:05", output)
         self.assertNotIn("15.0/100.0%", output)
+
+    def test_emphasis_renders_bold_when_color_is_enabled(self) -> None:
+        """Verify emphasized lines use ANSI bold styling when available."""
+        console = Console()
+        console.color = True
+        console.stream = io.StringIO()
+
+        console.emphasis("[1/8] 'clip.mp4' -> 'clip.srt'")
+
+        output = console.stream.getvalue()
+
+        self.assertEqual(
+            output,
+            f"{BOLD}[1/8] 'clip.mp4' -> 'clip.srt'{RESET}\n",
+        )
 
 
 if __name__ == "__main__":
