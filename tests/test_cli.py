@@ -11,6 +11,7 @@ from submaster.cli import (
     parse_time_value,
     resolve_batch_output_dir,
     resolve_clip_range,
+    resolve_input_path,
     resolve_output_path,
     resolve_vad_model_path,
 )
@@ -136,6 +137,24 @@ class CliTests(unittest.TestCase):
         """Verify that batch mode only accepts directory outputs."""
         with self.assertRaisesRegex(SubmasterError, "directory path"):
             resolve_batch_output_dir("subs/output.srt")
+
+    def test_resolve_input_path_maps_smb_url_to_gvfs_mount(self) -> None:
+        """Verify that SMB URLs resolve to the expected GVFS-mounted local path."""
+        smb_url = "smb://jupiter.local/magia/Istruzioni/Outside%20The%20Box/Instructions"
+        expected_path = Path(
+            "/run/user/1000/gvfs/smb-share:server=jupiter.local,share=magia"
+        ) / "Istruzioni" / "Outside The Box" / "Instructions"
+
+        with patch("submaster.cli.os.getuid", return_value=1000):
+            with patch("pathlib.Path.exists", return_value=True):
+                resolved = resolve_input_path(smb_url)
+
+        self.assertEqual(resolved, expected_path.resolve())
+
+    def test_resolve_input_path_rejects_malformed_smb_url(self) -> None:
+        """Verify malformed SMB URLs fail with a user-facing validation error."""
+        with self.assertRaisesRegex(SubmasterError, "Malformed SMB URL"):
+            resolve_input_path("smb://jupiter.local")
 
     def test_build_batch_jobs_rejects_duplicate_output_stems(self) -> None:
         """Verify that two batch inputs cannot target the same output subtitle path."""
@@ -350,6 +369,7 @@ class CliTests(unittest.TestCase):
         """Verify cancelled runs clear the progress bar before printing the error."""
         events: list[str] = []
         console = SimpleNamespace(
+            banner=lambda _message: None,
             dismiss_progress=lambda: events.append("dismiss"),
             error=lambda message: events.append(f"error:{message}"),
         )

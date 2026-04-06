@@ -6,6 +6,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from .config import (
     DEFAULT_LANGUAGE,
@@ -378,6 +379,41 @@ def resolve_batch_output_dir(requested_output: str | None) -> Path | None:
     return output_path
 
 
+def resolve_input_path(raw_input: str) -> Path:
+    """Resolve a CLI input argument into a local filesystem path.
+
+    :param raw_input: Raw positional input argument provided by the caller.
+    :type raw_input: str
+    :returns: Resolved local path.
+    :rtype: pathlib.Path
+    :raises SubmasterError: If an SMB URL is malformed or not mounted locally.
+    """
+    parsed = urlparse(raw_input)
+    if parsed.scheme.lower() != "smb":
+        return Path(raw_input).expanduser().resolve()
+
+    host = parsed.hostname
+    relative_parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if host is None or not relative_parts:
+        raise SubmasterError(
+            f"Malformed SMB URL. Expected smb://host/share/path, got: {raw_input}"
+        )
+
+    share = relative_parts[0]
+    subpath_parts = relative_parts[1:]
+    gvfs_base = Path(
+        f"/run/user/{os.getuid()}/gvfs/smb-share:server={host},share={share}"
+    )
+    candidate_path = gvfs_base.joinpath(*subpath_parts).resolve()
+    if candidate_path.exists():
+        return candidate_path
+
+    raise SubmasterError(
+        "SMB URL is not available as a local mount path. "
+        f"Expected mounted location: {candidate_path}"
+    )
+
+
 def discover_batch_inputs(input_dir: Path) -> tuple[list[Path], int]:
     """Find direct child files that expose a video stream.
 
@@ -623,7 +659,7 @@ def main(argv: list[str] | None = None) -> int:
         clip_range = resolve_clip_range(args.range)
         models_dir = Path(args.models_dir).expanduser().resolve()
 
-        input_path = Path(args.input).expanduser().resolve()
+        input_path = resolve_input_path(args.input)
         if not input_path.exists():
             raise SubmasterError(f"Input file does not exist: {input_path}")
 
