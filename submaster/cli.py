@@ -675,7 +675,7 @@ def main(argv: list[str] | None = None) -> int:
     console = Console()
 
     try:
-        console.banner(">>> Submaster <<<")
+        console.banner(">>> SubMaster <<<")
         # Verify external tools and input/output paths before doing any
         # expensive setup.
         ensure_runtime_dependencies()

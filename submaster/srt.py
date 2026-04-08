@@ -10,6 +10,7 @@ from .errors import SubmasterError
 TIMESTAMP_RE = re.compile(
     r"(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})[,.](?P<millis>\d{3})"
 )
+_TRANSCRIPT_WHITESPACE_RE = re.compile(r"\s+")
 
 
 @dataclass(frozen=True)
@@ -138,11 +139,47 @@ def render_transcript(cues: list[Cue]) -> str:
 
     :param cues: Subtitle cues to flatten into transcript lines.
     :type cues: list[Cue]
-    :returns: Plain-text transcript with one normalized dialogue line per cue.
+    :returns: Plain-text transcript with one normalized dialogue sentence per line.
     :rtype: str
     """
-    transcript_lines = [" ".join(line.strip() for line in cue.text if line.strip()) for cue in cues]
-    return "\n".join(line for line in transcript_lines if line) + "\n"
+    transcript_text = " ".join(
+        " ".join(line.strip() for line in cue.text if line.strip()) for cue in cues
+    )
+    normalized_text = _TRANSCRIPT_WHITESPACE_RE.sub(" ", transcript_text).strip()
+    if not normalized_text:
+        return ""
+    transcript_lines = _split_transcript_sentences(normalized_text)
+    return "\n".join(transcript_lines) + "\n"
+
+
+def _split_transcript_sentences(text: str) -> list[str]:
+    """Split transcript prose into readable sentence-like lines."""
+    lines: list[str] = []
+    current_line: list[str] = []
+    index = 0
+
+    while index < len(text):
+        character = text[index]
+        current_line.append(character)
+        index += 1
+
+        if character not in ".!?":
+            continue
+
+        while index < len(text) and text[index] in "\"')]}":
+            current_line.append(text[index])
+            index += 1
+
+        while index < len(text) and text[index].isspace():
+            index += 1
+
+        lines.append("".join(current_line).strip())
+        current_line = []
+
+    trailing_line = "".join(current_line).strip()
+    if trailing_line:
+        lines.append(trailing_line)
+    return lines
 
 
 def shift_cues(cues: list[Cue], offset_ms: int) -> list[Cue]:

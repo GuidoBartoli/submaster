@@ -1,7 +1,7 @@
 import unittest
 
 from submaster.errors import SubmasterError
-from submaster.srt import format_timestamp, normalize_srt, parse_srt
+from submaster.srt import Cue, format_timestamp, normalize_srt, parse_srt, render_transcript
 
 
 class SrtTests(unittest.TestCase):
@@ -47,6 +47,21 @@ class SrtTests(unittest.TestCase):
         """Verify that cues ending before they start are rejected."""
         with self.assertRaises(SubmasterError):
             parse_srt("1\n00:00:02,000 --> 00:00:01,000\nbad\n")
+
+    def test_render_transcript_merges_cues_and_breaks_on_sentence_punctuation(self) -> None:
+        """Verify that transcript output uses sentence boundaries instead of subtitle line breaks."""
+        cues = [
+            Cue(start_ms=0, end_ms=1_000, text=["Hello", "world."]),
+            Cue(start_ms=1_000, end_ms=2_000, text=["How are", "you?"]),
+            Cue(start_ms=2_000, end_ms=3_000, text=["I am fine"]),
+        ]
+
+        transcript = render_transcript(cues)
+
+        self.assertEqual(
+            transcript,
+            "Hello world.\nHow are you?\nI am fine\n",
+        )
 
 
 if __name__ == "__main__":

@@ -414,7 +414,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(
                 transcript_path.read_text(encoding="utf-8"),
-                "hello\nhow are you?\n",
+                "hello how are you?\n",
             )
 
     def test_main_dismisses_active_progress_before_keyboard_interrupt_error(self) -> None:
