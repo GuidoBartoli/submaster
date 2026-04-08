@@ -270,11 +270,12 @@ class CliTests(unittest.TestCase):
             self.assertTrue((output_dir / "bravo.srt").exists())
 
     def test_main_invokes_translation_when_requested(self) -> None:
-        """Verify that the translation pipeline runs when `--translate-to` is set."""
+        """Verify that translation keeps the original `.srt` and writes a suffixed translated copy."""
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.mp4"
             raw_srt_path = Path(tmpdir) / "generated.srt"
             output_path = Path(tmpdir) / "output.srt"
+            translated_output_path = Path(tmpdir) / "output_it.srt"
             work_dir = Path(tmpdir) / "work"
             work_dir.mkdir()
             input_path.write_bytes(b"fake")
@@ -287,6 +288,7 @@ class CliTests(unittest.TestCase):
             translator_instance.translate_srt.return_value = (
                 "1\r\n00:00:00,000 --> 00:00:01,000\r\nciao\r\n"
             )
+            translator_instance.target_language = SimpleNamespace(code="it")
 
             # Patch all external work so the test exercises orchestration only.
             with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
@@ -314,6 +316,10 @@ class CliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(
                 output_path.read_text(encoding="utf-8"),
+                "1\n00:00:00,000 --> 00:00:01,000\nhello\n",
+            )
+            self.assertEqual(
+                translated_output_path.read_text(encoding="utf-8"),
                 "1\n00:00:00,000 --> 00:00:01,000\nciao\n",
             )
             translator_instance.translate_srt.assert_called_once()

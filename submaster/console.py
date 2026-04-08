@@ -13,6 +13,7 @@ DIM = "\033[2m"
 BOLD = "\033[1m"
 BLUE = "\033[38;5;39m"
 CYAN = "\033[38;5;44m"
+MAGENTA = "\033[38;5;201m"
 ORANGE = "\033[38;5;208m"
 GREEN = "\033[38;5;42m"
 YELLOW = "\033[38;5;220m"
@@ -171,7 +172,7 @@ class Console:
         :param detail: Optional secondary line shown below the title.
         :type detail: str | None
         """
-        heading = _style(self.color, BOLD + BLUE, title)
+        heading = _style(self.color, BOLD + MAGENTA, title)
         self.line(heading)
         if detail:
             self.line(_style(self.color, DIM, detail))

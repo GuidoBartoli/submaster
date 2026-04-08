@@ -16,6 +16,13 @@ _BATCH_CUE_RE = re.compile(
     re.DOTALL,
 )
 _SINGLE_CUE_START_RE = re.compile(r"\[\[\[cue:(?P<id>\d+)\]\]\]\s*", re.DOTALL)
+_SENTENCE_END_RE = re.compile(r"[.!?…。！？]+[\"')\\]»”’]*$")
+_CLAUSE_END_RE = re.compile(r"[,;:，；、]+[\"')\\]»”’]*$")
+_CONTINUATION_START_RE = re.compile(r"^[,;:，；、.!?。！？)\]»”’]")
+_LOWERCASE_START_RE = re.compile(r"^[a-zà-öø-ÿ]")
+_SOFT_BATCH_CHAR_RATIO = 0.7
+_STRONG_GAP_MS = 700
+_SOFT_GAP_MS = 350
 
 
 @dataclass(frozen=True)
@@ -217,26 +224,111 @@ class SubtitleTranslator:
         :rtype: list[list[Cue]]
         """
         batches: list[list[Cue]] = []
-        current_batch: list[Cue] = []
-        current_chars = 0
+        start_index = 0
 
-        # Start a new batch whenever either the cue count or character limit would overflow.
-        for cue in cues:
-            cue_chars = len("\n".join(cue.text))
-            if current_batch and (
-                len(current_batch) >= self.max_batch_cues
-                or current_chars + cue_chars > self.max_batch_chars
-            ):
-                batches.append(current_batch)
-                current_batch = []
-                current_chars = 0
-
-            current_batch.append(cue)
-            current_chars += cue_chars
-
-        if current_batch:
-            batches.append(current_batch)
+        while start_index < len(cues):
+            end_index = self._choose_batch_end(cues, start_index)
+            batches.append(cues[start_index : end_index + 1])
+            start_index = end_index + 1
         return batches
+
+    def _choose_batch_end(self, cues: list[Cue], start_index: int) -> int:
+        """Choose the best batch end from one start index within hard limits."""
+        best_end = start_index
+        best_score = float("-inf")
+        batch_chars = 0
+
+        for end_index in range(start_index, min(len(cues), start_index + self.max_batch_cues)):
+            cue_chars = len(self._cue_text(cues[end_index]))
+            if end_index > start_index and batch_chars + cue_chars > self.max_batch_chars:
+                break
+
+            batch_chars += cue_chars
+            score = self._score_batch_end(cues, start_index, end_index, batch_chars)
+            if score > best_score:
+                best_score = score
+                best_end = end_index
+
+        return best_end
+
+    def _score_batch_end(
+        self,
+        cues: list[Cue],
+        start_index: int,
+        end_index: int,
+        batch_chars: int,
+    ) -> float:
+        """Score one candidate batch end, preferring sentence-complete boundaries."""
+        score = float(batch_chars)
+        batch_size = end_index - start_index + 1
+        current_text = self._cue_text(cues[end_index])
+        next_text = self._cue_text(cues[end_index + 1]) if end_index + 1 < len(cues) else ""
+        gap_after_ms = self._gap_after_ms(cues, end_index)
+        soft_char_target = max(1, int(self.max_batch_chars * _SOFT_BATCH_CHAR_RATIO))
+
+        score += batch_size * 120
+        if batch_chars >= soft_char_target:
+            score += 200
+
+        if self._ends_sentence(current_text):
+            score += 3_000
+        elif self._ends_clause(current_text):
+            score += 1_200
+        elif end_index + 1 < len(cues):
+            score -= 900
+
+        if gap_after_ms >= _STRONG_GAP_MS:
+            score += 2_000
+        elif gap_after_ms >= _SOFT_GAP_MS:
+            score += 800
+
+        if next_text:
+            if self._starts_continuation(next_text):
+                score -= 2_500
+            elif self._starts_new_sentence(next_text):
+                score += 500
+
+        if batch_size == 1 and end_index + 1 < len(cues) and batch_chars < soft_char_target:
+            score -= 700
+        return score
+
+    def _cue_text(self, cue: Cue) -> str:
+        """Normalize cue text for batching heuristics."""
+        return " ".join(line.strip() for line in cue.text if line.strip()).strip()
+
+    def _gap_after_ms(self, cues: list[Cue], index: int) -> int:
+        """Return the source timing gap after one cue, or zero at the end."""
+        if index + 1 >= len(cues):
+            return 0
+        return max(0, cues[index + 1].start_ms - cues[index].end_ms)
+
+    def _ends_sentence(self, text: str) -> bool:
+        """Check whether text ends with sentence-closing punctuation."""
+        return bool(_SENTENCE_END_RE.search(text.strip()))
+
+    def _ends_clause(self, text: str) -> bool:
+        """Check whether text ends with softer clause punctuation."""
+        return bool(_CLAUSE_END_RE.search(text.strip()))
+
+    def _starts_continuation(self, text: str) -> bool:
+        """Check whether the next cue likely continues the same sentence."""
+        stripped = text.strip()
+        if not stripped:
+            return False
+        return bool(
+            _CONTINUATION_START_RE.match(stripped)
+            or _LOWERCASE_START_RE.match(stripped)
+        )
+
+    def _starts_new_sentence(self, text: str) -> bool:
+        """Check whether the next cue looks like a fresh sentence start."""
+        stripped = text.strip()
+        if not stripped:
+            return False
+        if self._starts_continuation(stripped):
+            return False
+        first_character = stripped[0]
+        return first_character.isupper() or first_character.isdigit()
 
     def _translate_batch(self, batch: list[Cue]) -> list[Cue]:
         """Translate one cue batch and preserve cue order.

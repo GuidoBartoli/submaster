@@ -93,7 +93,7 @@ class TranslationTests(unittest.TestCase):
                 return None
 
         return SimpleNamespace(
-            note=lambda message: None,
+            info=lambda message: None,
             warn=lambda message: None,
             progress=lambda label, total, unit="": DummyProgress(),
         )
@@ -178,7 +178,7 @@ class TranslationTests(unittest.TestCase):
                 return None
 
         console = SimpleNamespace(
-            note=lambda message: None,
+            info=lambda message: None,
             warn=warnings.append,
             progress=lambda label, total, unit="": DummyProgress(),
         )
@@ -234,6 +234,84 @@ class TranslationTests(unittest.TestCase):
         )
 
         self.assertEqual(translator.max_batch_cues, 2)
+
+    def test_batch_cues_prefers_sentence_boundary_over_mid_sentence_end(self) -> None:
+        """Verify that batching avoids ending on a mid-sentence fragment when it can stop cleanly."""
+        translator = SubtitleTranslator(
+            console=self._console(),
+            runner=DummyRunner([]),
+            model_path=Path("/tmp/HY-MT1.5-7B-Q4_K_M.gguf"),
+            target_language="it",
+            source_language="en",
+            requested_device="cpu",
+            threads=2,
+            max_batch_cues=3,
+            max_batch_chars=120,
+        )
+
+        batches = translator._batch_cues(
+            [
+                Cue(start_ms=0, end_ms=800, text=["This is"]),
+                Cue(start_ms=850, end_ms=1_600, text=["one sentence."]),
+                Cue(start_ms=1_650, end_ms=2_300, text=["This next bit"]),
+                Cue(start_ms=2_350, end_ms=3_200, text=["continues onward."]),
+            ]
+        )
+
+        self.assertEqual([[line for cue in batch for line in cue.text] for batch in batches], [
+            ["This is", "one sentence."],
+            ["This next bit", "continues onward."],
+        ])
+
+    def test_batch_cues_keeps_lowercase_continuation_with_previous_cues(self) -> None:
+        """Verify that likely sentence continuations stay with the preceding batch."""
+        translator = SubtitleTranslator(
+            console=self._console(),
+            runner=DummyRunner([]),
+            model_path=Path("/tmp/HY-MT1.5-7B-Q4_K_M.gguf"),
+            target_language="it",
+            source_language="en",
+            requested_device="cpu",
+            threads=2,
+            max_batch_cues=3,
+            max_batch_chars=160,
+        )
+
+        batches = translator._batch_cues(
+            [
+                Cue(start_ms=0, end_ms=600, text=["I think"]),
+                Cue(start_ms=650, end_ms=1_250, text=["this works"]),
+                Cue(start_ms=1_300, end_ms=2_000, text=["well now."]),
+                Cue(start_ms=2_700, end_ms=3_200, text=["Next sentence."]),
+            ]
+        )
+
+        self.assertEqual([len(batch) for batch in batches], [3, 1])
+
+    def test_batch_cues_prefers_long_pause_as_boundary(self) -> None:
+        """Verify that a large timing gap becomes a natural batch break."""
+        translator = SubtitleTranslator(
+            console=self._console(),
+            runner=DummyRunner([]),
+            model_path=Path("/tmp/HY-MT1.5-7B-Q4_K_M.gguf"),
+            target_language="it",
+            source_language="en",
+            requested_device="cpu",
+            threads=2,
+            max_batch_cues=4,
+            max_batch_chars=180,
+        )
+
+        batches = translator._batch_cues(
+            [
+                Cue(start_ms=0, end_ms=700, text=["First part"]),
+                Cue(start_ms=750, end_ms=1_400, text=["continues"]),
+                Cue(start_ms=2_500, end_ms=3_100, text=["After a pause"]),
+                Cue(start_ms=3_150, end_ms=3_900, text=["we continue."]),
+            ]
+        )
+
+        self.assertEqual([len(batch) for batch in batches], [2, 2])
 
     def test_translate_single_cue_accepts_missing_closing_marker(self) -> None:
         """Verify that single-cue recovery accepts outputs missing the closing tag."""

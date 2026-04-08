@@ -520,6 +520,12 @@ def build_transcription_output_paths(input_path: Path, output_path: Path) -> tup
     return raw_path, cleaned_path
 
 
+def build_translation_output_path(output_path: Path, language_code: str) -> Path:
+    """Build the translated subtitle sidecar path for one target language."""
+    normalized_code = language_code.strip().lower() or "translated"
+    return output_path.with_name(f"{output_path.stem}_{normalized_code}.srt")
+
+
 def prepare_processing_resources(
     args: argparse.Namespace,
     models_dir: Path,
@@ -596,11 +602,20 @@ def process_media_file(
     """Run the full subtitle pipeline for one media file."""
     work_dir: Path | None = None
     transcript_path, cleanup_path = build_transcription_output_paths(input_path, output_path)
+    translated_output_path = (
+        build_translation_output_path(output_path, resources.translator.target_language.code)
+        if resources.translator is not None
+        else None
+    )
 
     try:
         if output_path.exists() and not args.overwrite:
             raise SubmasterError(
                 f"Output file already exists: {output_path}. Use --overwrite to replace it."
+            )
+        if translated_output_path is not None and translated_output_path.exists() and not args.overwrite:
+            raise SubmasterError(
+                f"Translated subtitle file already exists: {translated_output_path}. Use --overwrite to replace it."
             )
         if args.transcribe and transcript_path.exists() and not args.overwrite:
             raise SubmasterError(
@@ -661,6 +676,11 @@ def process_media_file(
             raw_srt,
             offset_ms=clip_start_ms or 0,
         )
+        translated_srt = (
+            resources.translator.translate_srt(normalized_srt)
+            if resources.translator is not None
+            else None
+        )
         transcript_text = (
             render_transcript_from_srt(
                 raw_srt,
@@ -674,10 +694,10 @@ def process_media_file(
             if transcript_text is not None and resources.transcript_cleaner is not None
             else None
         )
-        if resources.translator is not None:
-            normalized_srt = resources.translator.translate_srt(normalized_srt)
 
         output_path.write_text(normalized_srt, encoding="utf-8", newline="")
+        if translated_srt is not None and translated_output_path is not None:
+            translated_output_path.write_text(translated_srt, encoding="utf-8", newline="")
         if transcript_text is not None:
             transcript_path.write_text(transcript_text, encoding="utf-8", newline="")
         if cleaned_transcript_text is not None:
@@ -689,6 +709,8 @@ def process_media_file(
             console.success(f"Kept normalized audio at {kept_audio}")
 
         console.success(f"Subtitle written to {output_path}")
+        if translated_srt is not None and translated_output_path is not None:
+            console.success(f"Translated subtitle written to {translated_output_path}")
         if transcript_text is not None:
             console.success(f"Transcription written to {transcript_path}")
         if cleaned_transcript_text is not None:
