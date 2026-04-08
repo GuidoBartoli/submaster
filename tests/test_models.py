@@ -1,6 +1,7 @@
 import unittest
 
 from submaster.models import (
+    resolve_cleanup_model_spec,
     resolve_model_spec,
     resolve_translation_model_spec,
     resolve_vad_model_spec,
@@ -23,6 +24,14 @@ class ModelSpecTests(unittest.TestCase):
 
         self.assertEqual(spec.filename, "HY-MT1.5-7B-Q4_K_M.gguf")
         self.assertIn("HY-MT1.5-7B-Q4_K_M.gguf", spec.download_url)
+
+    def test_cleanup_model_maps_to_qwen_q4_k_m(self) -> None:
+        """Verify that transcript cleanup resolves to the expected Qwen GGUF file."""
+        spec = resolve_cleanup_model_spec("qwen3.5-9b")
+
+        self.assertEqual(spec.filename, "Qwen3.5-9B-Q4_K_M.gguf")
+        self.assertIn("Qwen3.5-9B-Q4_K_M.gguf", spec.download_url)
+        self.assertIn("lmstudio-community/Qwen3.5-9B-GGUF", spec.download_url)
 
     def test_vad_model_maps_to_whisper_vad_artifact(self) -> None:
         """Verify that the named VAD alias resolves to the expected Hugging Face file."""

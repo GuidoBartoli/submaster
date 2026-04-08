@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import json
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -26,6 +27,7 @@ _PROMPT_CUE_RE = re.compile(
     r"\[\[\[cue:(?P<id>\d+)\]\]\]\s*(?P<text>.*?)\s*\[\[\[/cue\]\]\]",
     re.DOTALL,
 )
+_THINK_TAG_RE = re.compile(r"</?think>", re.IGNORECASE)
 
 
 class LlamaCppRunner:
@@ -50,6 +52,8 @@ class LlamaCppRunner:
         self.supports_no_conversation = self._supports_any_flag("-no-cnv", "--no-conversation")
         self.supports_no_warmup = self._supports_any_flag("--no-warmup")
         self.supports_single_turn = self._supports_any_flag("--single-turn")
+        self.supports_chat_template_kwargs = self._supports_any_flag("--chat-template-kwargs")
+        self.supports_reasoning_format = self._supports_any_flag("--reasoning-format")
         self.gpu_backends = self._detect_gpu_backends_for(self.cli_path)
         self._announced_modes: set[str] = set()
 
@@ -506,6 +510,21 @@ class LlamaCppRunner:
             normalized = "\n".join(part for part in parts if part.strip() and not part.strip().isidentifier())
         return normalized.strip()
 
+    def _strip_reasoning_output(self, output: str) -> str:
+        """Remove common Qwen-style reasoning wrappers from model output.
+
+        :param output: Normalized model output.
+        :type output: str
+        :returns: Output with leading `<think>` sections removed when present.
+        :rtype: str
+        """
+        normalized = output.strip()
+        closing_tag = re.search(r"</think>", normalized, flags=re.IGNORECASE)
+        if closing_tag is not None:
+            normalized = normalized[closing_tag.end():].strip()
+        normalized = _THINK_TAG_RE.sub("", normalized).strip()
+        return normalized
+
     def _announce_mode_once(self, device: str) -> None:
         """Emit the selected runtime mode at most once per device.
 
@@ -530,10 +549,18 @@ class LlamaCppRunner:
         threads: int,
         system_prompt: str | None = None,
         show_spinner: bool = True,
+        context_size: int = LLAMA_CONTEXT_SIZE,
+        temperature: float = LLAMA_TEMPERATURE,
+        top_k: int | None = LLAMA_TOP_K,
+        top_p: float = LLAMA_TOP_P,
+        repeat_penalty: float = LLAMA_REPEAT_PENALTY,
+        max_tokens: int | None = None,
+        disable_thinking: bool = False,
+        spinner_label: str = "Running subtitle translation batch.",
     ) -> str:
-        """Run a translation prompt through `llama.cpp`.
+        """Run a prompt through `llama.cpp`.
 
-        :param model_path: Translation model file to load.
+        :param model_path: Model file to load.
         :type model_path: pathlib.Path
         :param prompt: Prompt text to send to the model.
         :type prompt: str
@@ -563,20 +590,20 @@ class LlamaCppRunner:
             "-m",
             str(model_path),
             "-n",
-            str(self._estimated_max_tokens(prompt)),
+            str(max_tokens if max_tokens is not None else self._estimated_max_tokens(prompt)),
             "-c",
-            str(LLAMA_CONTEXT_SIZE),
+            str(max(512, context_size)),
             "-t",
             str(max(1, threads)),
             "--temp",
-            str(LLAMA_TEMPERATURE),
-            "--top-k",
-            str(LLAMA_TOP_K),
+            str(temperature),
             "--top-p",
-            str(LLAMA_TOP_P),
+            str(top_p),
             "--repeat-penalty",
-            str(LLAMA_REPEAT_PENALTY),
+            str(repeat_penalty),
         ]
+        if top_k is not None:
+            command.extend(["--top-k", str(top_k)])
 
         use_chat_turn = bool(system_prompt and self.supports_conversation and self.supports_single_turn)
         if use_chat_turn:
@@ -590,6 +617,13 @@ class LlamaCppRunner:
                     prompt,
                 ]
             )
+            if disable_thinking and self.supports_chat_template_kwargs:
+                command.extend(
+                    [
+                        "--chat-template-kwargs",
+                        json.dumps({"enable_thinking": False}, separators=(",", ":")),
+                    ]
+                )
         else:
             command.extend(["-p", prompt])
 
@@ -604,6 +638,8 @@ class LlamaCppRunner:
             command.append("--no-warmup")
         if not use_chat_turn and not self.supports_no_conversation and self.supports_single_turn:
             command.append("--single-turn")
+        if disable_thinking and not use_chat_turn and self.supports_reasoning_format:
+            command.extend(["--reasoning-format", "none"])
 
         if self.supports_ngl_flag:
             gpu_layers = LLAMA_N_GPU_LAYERS_ALL if device == "gpu" else LLAMA_N_GPU_LAYERS_CPU
@@ -614,7 +650,7 @@ class LlamaCppRunner:
         self._announce_mode_once(device)
         self._verify_gpu_runtime_linkage(requested, device)
 
-        spinner_context = self.console.spinner("Running subtitle translation batch.") if show_spinner else nullcontext()
+        spinner_context = self.console.spinner(spinner_label) if show_spinner else nullcontext()
         with spinner_context:
             with tempfile.SpooledTemporaryFile(max_size=1_048_576) as stdout_file:
                 with tempfile.SpooledTemporaryFile(max_size=1_048_576) as stderr_file:
@@ -641,6 +677,8 @@ class LlamaCppRunner:
 
         # Normalize the model output before cue parsing so fenced wrappers do not break the translator.
         normalized_output = self._normalize_output(stdout_text)
+        if disable_thinking:
+            normalized_output = self._strip_reasoning_output(normalized_output)
         if not normalized_output:
             raise SubmasterError("llama.cpp finished without producing translated text.")
         return normalized_output

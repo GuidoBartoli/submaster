@@ -5,6 +5,7 @@ import urllib.request
 from pathlib import Path
 
 from .config import (
+    CLEANUP_MODEL_SPECS,
     MODEL_SPECS,
     TRANSLATION_MODEL_SPECS,
     VAD_MODEL_SPECS,
@@ -69,6 +70,17 @@ def resolve_translation_model_spec(name: str) -> ModelSpec:
     return resolve_named_model_spec(name, TRANSLATION_MODEL_SPECS, model_label="translation model")
 
 
+def resolve_cleanup_model_spec(name: str) -> ModelSpec:
+    """Resolve a transcript cleanup model name from the built-in cleanup registry.
+
+    :param name: Cleanup model name from the CLI internals or tests.
+    :type name: str
+    :returns: Matching transcript cleanup model specification.
+    :rtype: ModelSpec
+    """
+    return resolve_named_model_spec(name, CLEANUP_MODEL_SPECS, model_label="cleanup model")
+
+
 def resolve_vad_model_spec(name: str) -> ModelSpec:
     """Resolve a VAD model name from the built-in VAD registry.
 
@@ -129,7 +141,7 @@ def ensure_model_available(
         # Stream the payload to disk and report byte progress as the download advances.
         with urllib.request.urlopen(request) as response, tmp_path.open("wb") as handle:
             total = int(response.headers.get("Content-Length", "0")) or None
-            progress = console.progress("download", total=total, unit="B")
+            progress = console.progress("download", total=total, show_value=False)
             downloaded = 0
             # Stream to disk first so incomplete downloads never masquerade as valid models.
             while True:
@@ -139,8 +151,13 @@ def ensure_model_available(
                 handle.write(chunk)
                 downloaded += len(chunk)
                 extra = format_bytes(downloaded)
+                if total is not None:
+                    extra = f"{extra} / {format_bytes(total)}"
                 progress.update(downloaded, extra=extra)
-            progress.finish(downloaded, extra=format_bytes(downloaded))
+            final_extra = format_bytes(downloaded)
+            if total is not None:
+                final_extra = f"{final_extra} / {format_bytes(total)}"
+            progress.finish(downloaded, extra=final_extra)
         os.replace(tmp_path, model_path)
     except Exception as exc:
         # Remove the partial file on failure so the next run starts cleanly.
@@ -171,6 +188,28 @@ def ensure_translation_model_available(name: str, models_dir: Path, console: Con
         console,
         model_specs=TRANSLATION_MODEL_SPECS,
         model_label="translation model",
+    )
+
+
+def ensure_cleanup_model_available(name: str, models_dir: Path, console: Console) -> Path:
+    """Ensure that a transcript cleanup model exists locally.
+
+    :param name: Cleanup model name to prepare.
+    :type name: str
+    :param models_dir: Directory where cleanup models are stored.
+    :type models_dir: pathlib.Path
+    :param console: Console used for status output and progress updates.
+    :type console: Console
+    :returns: Path to the ready-to-use cleanup model file.
+    :rtype: pathlib.Path
+    :raises SubmasterError: If the model cannot be resolved or downloaded.
+    """
+    return ensure_model_available(
+        name,
+        models_dir,
+        console,
+        model_specs=CLEANUP_MODEL_SPECS,
+        model_label="cleanup model",
     )
 
 

@@ -116,12 +116,30 @@ TRANSLATION_MODEL_SPECS: dict[str, ModelSpec] = {
     ),
 }
 
+# Qwen transcript cleanup model used by the optional transcript polishing stage.
+CLEANUP_MODEL_SPECS: dict[str, ModelSpec] = {
+    "qwen3.5-9b": ModelSpec(
+        name="qwen3.5-9b",
+        filename="Qwen3.5-9B-Q4_K_M.gguf",
+        download_url=(
+            "https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF/resolve/main/"
+            "Qwen3.5-9B-Q4_K_M.gguf?download=true"
+        ),
+        description=(
+            "Qwen3.5 9B in Q4_K_M GGUF format. "
+            "Used for optional transcript cleanup because it provides stronger "
+            "text polishing quality while staying practical for local llama.cpp inference."
+        ),
+    ),
+}
+
 # Backwards-compatible alias used by the existing whisper-only code path and tests.
 MODEL_SPECS = WHISPER_MODEL_SPECS
 
 # Default CLI values shared across modules.
 DEFAULT_MODEL = "turbo"
 DEFAULT_TRANSLATION_MODEL = "small"
+DEFAULT_CLEANUP_MODEL = "qwen3.5-9b"
 DEFAULT_VAD_MODEL = "silero-v6.2.0"
 DEFAULT_LANGUAGE = "auto"
 DEFAULT_WHISPER_MAX_CONTEXT = 0
@@ -138,6 +156,34 @@ LLAMA_TEMPERATURE = 0.0
 LLAMA_TOP_K = 1
 LLAMA_TOP_P = 1.0
 LLAMA_REPEAT_PENALTY = 1.0
+
+# Transcript cleanup defaults tuned for chunked transcript polishing prompts.
+TRANSCRIPT_CLEANUP_CONTEXT_SIZE = 16_384
+TRANSCRIPT_CLEANUP_MAX_CHUNK_CHARS = 8_000
+TRANSCRIPT_CLEANUP_FINAL_PASS_MAX_CHARS = 10_000
+TRANSCRIPT_CLEANUP_TEMPERATURE = 0.15
+TRANSCRIPT_CLEANUP_TOP_P = 0.9
+TRANSCRIPT_CLEANUP_REPEAT_PENALTY = 1.05
+TRANSCRIPT_CLEANUP_SYSTEM_PROMPT = """You are an expert transcript editor.
+Your task is to clean raw speech-to-text transcripts.
+
+Always:
+- fix punctuation, capitalization, grammar, and sentence boundaries
+- improve readability
+- preserve the original meaning
+- preserve the speaker's intent and spoken tone
+- format the output into readable paragraphs
+
+DO NOT:
+- summarize
+- add new information
+- remove content unless it is clearly accidental transcription noise
+- change technical terms, product names, or magic-effect terminology unless obviously incorrect
+- turn spoken language into overly formal writing
+- translate into a different language from the original text
+
+When the transcript is repetitive, keep meaningful repetition but remove obvious accidental duplication.
+Return only the cleaned transcript."""
 
 # Published language labels used to normalize user-facing translation targets.
 TRANSLATION_LANGUAGES: dict[str, str] = {

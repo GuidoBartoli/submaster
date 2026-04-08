@@ -103,9 +103,12 @@ class LlamaCppRunnerTests(unittest.TestCase):
         runner.supports_ngl_flag = True
         runner.supports_simple_io = True
         runner.supports_no_display_prompt = True
+        runner.supports_conversation = False
         runner.supports_no_conversation = True
         runner.supports_no_warmup = True
         runner.supports_single_turn = True
+        runner.supports_chat_template_kwargs = False
+        runner.supports_reasoning_format = False
         runner.gpu_backends = set()
         runner._announced_modes = set()
 
@@ -143,6 +146,57 @@ class LlamaCppRunnerTests(unittest.TestCase):
         self.assertIs(calls[0]["kwargs"]["stdin"], subprocess.DEVNULL)
         self.assertIn("stdout", calls[0]["kwargs"])
         self.assertIn("stderr", calls[0]["kwargs"])
+
+    def test_run_prompt_uses_chat_template_kwargs_to_disable_thinking(self) -> None:
+        """Verify that chat-style Qwen runs disable thinking through template kwargs."""
+        runner = LlamaCppRunner.__new__(LlamaCppRunner)
+        runner.console = type(
+            "ConsoleStub",
+            (),
+            {
+                "warn": lambda self, message: None,
+                "info": lambda self, message: None,
+                "spinner": lambda self, label: _SpinnerStub(),
+            },
+        )()
+        runner.cli_path = Path("/tmp/llama-cli")
+        runner.supports_ngl_flag = False
+        runner.supports_simple_io = False
+        runner.supports_no_display_prompt = False
+        runner.supports_conversation = True
+        runner.supports_no_conversation = False
+        runner.supports_no_warmup = False
+        runner.supports_single_turn = True
+        runner.supports_chat_template_kwargs = True
+        runner.supports_reasoning_format = True
+        runner.gpu_backends = set()
+        runner._announced_modes = set()
+
+        commands: list[list[str]] = []
+
+        def fake_run(command, **_kwargs):
+            stdout_file = _kwargs["stdout"]
+            stderr_file = _kwargs["stderr"]
+            stdout_file.write(b"<think>hidden</think>\nClean transcript.")
+            stderr_file.write(b"")
+            commands.append(command)
+            return type("Result", (), {"returncode": 0})()
+
+        with patch.object(LlamaCppRunner, "_verify_gpu_runtime_linkage", return_value=None):
+            with patch("submaster.llama_cpp.subprocess.run", side_effect=fake_run):
+                output = runner.run_prompt(
+                    model_path=Path("/tmp/model.gguf"),
+                    prompt="Clean this transcript",
+                    requested_device="cpu",
+                    threads=4,
+                    system_prompt="You are a cleaner.",
+                    disable_thinking=True,
+                )
+
+        self.assertEqual(output, "Clean transcript.")
+        self.assertIn("--chat-template-kwargs", commands[0])
+        self.assertIn('{"enable_thinking":false}', commands[0])
+        self.assertNotIn("--reasoning-format", commands[0])
 
     def test_estimated_max_tokens_uses_tagged_cue_payload(self) -> None:
         """Verify that response budgets scale with cue text instead of full prompt size."""

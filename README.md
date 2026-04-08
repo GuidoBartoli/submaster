@@ -16,7 +16,8 @@
 - Extracts and normalizes mono WAV audio using `ffmpeg` before transcription
 - Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
 - Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
-- Downloads missing Whisper and HY-MT model files on demand into the local `models/` cache
+- Optionally polishes `--transcript` output with a local **Qwen3.5-9B** cleanup pass through `llama.cpp`
+- Downloads missing Whisper, HY-MT, and transcript-cleanup model files on demand into the local `models/` cache
 - Works on Linux, macOS, and Windows when `ffmpeg`, `whisper.cpp`, and `llama.cpp` are available
 - Prefers GPU execution in `--device auto` when the selected native runtime appears GPU-capable
 - Disables rolling Whisper text context by default to reduce long-form repetition loops
@@ -30,7 +31,7 @@
 | macOS | Supported | Requires installed or locally built `whisper.cpp` and `llama.cpp` executables |
 | Windows | Supported | Requires installed or locally built `whisper.cpp` and `llama.cpp` executables; common `.exe` build outputs are auto-detected |
 
-The bundled fallback is only for `whisper.cpp` on Linux `x86_64`. Translation always requires a working `llama-cli`.
+The bundled fallback is only for `whisper.cpp` on Linux `x86_64`. Translation and transcript cleanup always require a working `llama-cli`.
 
 ## Requirements
 
@@ -38,7 +39,7 @@ The bundled fallback is only for `whisper.cpp` on Linux `x86_64`. Translation al
 - `ffmpeg`
 - `ffprobe`
 - a working `whisper.cpp` executable (`whisper-cli` recommended)
-- a working `llama.cpp` executable (`llama-cli` recommended) if subtitle translation is enabled
+- a working `llama.cpp` executable (`llama-cli` recommended) if subtitle translation or transcript cleanup is enabled
 
 `submaster` has no third-party Python runtime dependencies. The package metadata in [`pyproject.toml`](pyproject.toml) allows Python `>=3.10`. Python 3.12 is the default tested setup in this repository.
 
@@ -83,6 +84,17 @@ Available translation sizes:
 The project intentionally downloads the `Q4_K_M` variants instead of full-precision or FP8 checkpoints. For this CLI, the int4 GGUF models are the most suitable choice because they keep downloads, RAM usage, and VRAM usage reasonable while still fitting the local/offline execution goal on consumer hardware.
 
 The models are downloaded automatically into `models/` the first time translation is requested.
+
+## Transcript Cleanup Backend
+
+Plain-text transcript cleanup uses **Qwen3.5-9B Q4_K_M GGUF** through `llama.cpp`.
+
+- Enabled with `--transcript --cleanup`
+- Uses a chunked cleanup pipeline with a `16K` llama.cpp context window
+- Keeps subtitle generation unchanged and only rewrites the companion `.txt` transcript
+- Has no effect when `--transcript` is not enabled
+
+The cleanup model is downloaded automatically into `models/` the first time transcript polishing is requested.
 
 ## How Native Runtimes Are Located
 
@@ -216,6 +228,12 @@ Translate the generated subtitles into Italian:
 submaster input.mp4 --translate-to it
 ```
 
+Generate a plain-text transcript and clean it locally:
+
+```bash
+submaster input.mp4 --transcript --cleanup
+```
+
 Common patterns:
 
 ```bash
@@ -228,6 +246,7 @@ submaster input.mp4 --vad-model ./models/ggml-silero-v6.2.0.bin
 submaster input.mp4 --max-context -1
 submaster input.mp4 --translate-to it --translation-model large
 submaster input.mp4 --translate-to ja --device gpu --llama-cli ./llama.cpp/build/bin/llama-cli
+submaster input.mp4 --transcript --cleanup
 submaster input.mkv --output ./subs/
 submaster ./videos --batch --output ./subs/
 submaster input.mov --keep-audio
@@ -239,6 +258,8 @@ submaster input.mp4 --show-model-info
 On Windows, `--output .\subs\`, `--whisper-cli .\whisper.cpp\build\bin\Release\whisper-cli.exe`, and `--llama-cli .\llama.cpp\build\bin\Release\llama-cli.exe` work as expected.
 
 If `--translate-to` is set, the written `.srt` file contains the translated subtitles. If you want both source-language and translated subtitle files, run the command twice with different output paths.
+
+`--transcript` writes a companion plain-text `.txt` file next to the subtitle output. Add `--cleanup` to run an extra local Qwen transcript-polishing stage on that text only.
 
 `--range START END` limits extraction, transcription, and optional translation to the selected source clip while keeping subtitle timestamps aligned to the original video timeline. Accepted formats are `SS`, `MM:SS`, or `HH:MM:SS` with optional `.mmm` or `,mmm` milliseconds.
 
@@ -298,4 +319,5 @@ Example chapter file:
 - whisper.cpp VAD model files: <https://huggingface.co/ggml-org/whisper-vad/tree/main>
 - Tencent HY-MT1.5-1.8B-GGUF: <https://huggingface.co/tencent/HY-MT1.5-1.8B-GGUF>
 - Tencent HY-MT1.5-7B-GGUF: <https://huggingface.co/tencent/HY-MT1.5-7B-GGUF>
+- Qwen3.5-9B GGUF: <https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF>
 - llama.cpp: <https://github.com/ggml-org/llama.cpp>

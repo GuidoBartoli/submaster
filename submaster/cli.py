@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from .config import (
+    DEFAULT_CLEANUP_MODEL,
     DEFAULT_LANGUAGE,
     DEFAULT_MODEL,
     DEFAULT_THREADS,
@@ -22,12 +23,14 @@ from .errors import SubmasterError
 from .llama_cpp import LlamaCppRunner
 from .media import create_work_dir, extract_audio, has_video_stream
 from .models import (
+    ensure_cleanup_model_available,
     ensure_model_available,
     ensure_translation_model_available,
     ensure_vad_model_available,
     resolve_vad_model_spec,
 )
 from .srt import normalize_srt, render_transcript_from_srt
+from .transcript_cleanup import TranscriptCleaner
 from .translation import SubtitleTranslator
 from .whisper_cpp import WhisperCppRunner
 
@@ -43,6 +46,7 @@ class ProcessingResources:
     whisper_runner: WhisperCppRunner
     whisper_model_path: Path
     translator: SubtitleTranslator | None
+    transcript_cleaner: TranscriptCleaner | None
     vad_model_path: Path | None
 
 
@@ -59,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Create synchronized .srt subtitles from a video file, or batch-process "
             "every video file in a folder, using whisper.cpp with optional offline "
-            "translation via llama.cpp."
+            "translation and transcript cleanup via llama.cpp."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -162,6 +166,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--transcript",
         action="store_true",
         help="Also write a plain-text transcript next to the generated subtitle.",
+    )
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Polish the transcript text with a local Qwen cleanup model. Has no effect without --transcript.",
     )
     parser.add_argument(
         "--show-timings",
@@ -495,6 +504,9 @@ def build_processing_summary(
         summary += f" | Max context: {args.max_context}"
     if vad_model_path is not None:
         summary += " | VAD: on"
+    if args.transcript:
+        transcript_mode = "cleaned" if args.cleanup else "raw"
+        summary += f" | Transcript: {transcript_mode}"
     if args.translate_to:
         summary += f" | Translate to: {args.translate_to} ({args.translation_model})"
     return summary
@@ -513,6 +525,13 @@ def prepare_processing_resources(
     )
     whisper_model_path = ensure_model_available(args.model, models_dir, console)
 
+    llama_runner: LlamaCppRunner | None = None
+    if args.translate_to or (args.transcript and args.cleanup):
+        llama_runner = LlamaCppRunner(
+            console=console,
+            cli_path=Path(args.llama_cli).expanduser() if args.llama_cli else None,
+        )
+
     translator: SubtitleTranslator | None = None
     if args.translate_to:
         translation_model_path = ensure_translation_model_available(
@@ -520,16 +539,27 @@ def prepare_processing_resources(
             models_dir,
             console,
         )
-        translation_runner = LlamaCppRunner(
-            console=console,
-            cli_path=Path(args.llama_cli).expanduser() if args.llama_cli else None,
-        )
         translator = SubtitleTranslator(
             console=console,
-            runner=translation_runner,
+            runner=llama_runner,
             model_path=translation_model_path,
             target_language=args.translate_to,
             source_language=args.language,
+            requested_device=args.device,
+            threads=args.threads,
+        )
+
+    transcript_cleaner: TranscriptCleaner | None = None
+    if args.transcript and args.cleanup:
+        cleanup_model_path = ensure_cleanup_model_available(
+            DEFAULT_CLEANUP_MODEL,
+            models_dir,
+            console,
+        )
+        transcript_cleaner = TranscriptCleaner(
+            console=console,
+            runner=llama_runner,
+            model_path=cleanup_model_path,
             requested_device=args.device,
             threads=args.threads,
         )
@@ -538,6 +568,7 @@ def prepare_processing_resources(
         whisper_runner=whisper_runner,
         whisper_model_path=whisper_model_path,
         translator=translator,
+        transcript_cleaner=transcript_cleaner,
         vad_model_path=vad_model_path,
     )
 
@@ -626,6 +657,8 @@ def process_media_file(
             if args.transcript
             else None
         )
+        if transcript_text is not None and resources.transcript_cleaner is not None:
+            transcript_text = resources.transcript_cleaner.clean_text(transcript_text)
         if resources.translator is not None:
             normalized_srt = resources.translator.translate_srt(normalized_srt)
 
