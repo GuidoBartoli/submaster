@@ -27,7 +27,7 @@ from .models import (
     ensure_vad_model_available,
     resolve_vad_model_spec,
 )
-from .srt import normalize_srt
+from .srt import normalize_srt, render_transcript_from_srt
 from .translation import SubtitleTranslator
 from .whisper_cpp import WhisperCppRunner
 
@@ -157,6 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-audio",
         action="store_true",
         help="Keep the normalized WAV file next to the generated subtitle.",
+    )
+    parser.add_argument(
+        "--transcript",
+        action="store_true",
+        help="Also write a plain-text transcript next to the generated subtitle.",
     )
     parser.add_argument(
         "--show-timings",
@@ -551,11 +556,16 @@ def process_media_file(
 ) -> None:
     """Run the full subtitle pipeline for one media file."""
     work_dir: Path | None = None
+    transcript_path = output_path.with_suffix(".txt")
 
     try:
         if output_path.exists() and not args.overwrite:
             raise SubmasterError(
                 f"Output file already exists: {output_path}. Use --overwrite to replace it."
+            )
+        if args.transcript and transcript_path.exists() and not args.overwrite:
+            raise SubmasterError(
+                f"Transcript file already exists: {transcript_path}. Use --overwrite to replace it."
             )
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -603,14 +613,25 @@ def process_media_file(
             show_model_info=args.show_model_info,
         )
 
+        raw_srt = raw_srt_path.read_text(encoding="utf-8")
         normalized_srt = normalize_srt(
-            raw_srt_path.read_text(encoding="utf-8"),
+            raw_srt,
             offset_ms=clip_start_ms or 0,
+        )
+        transcript_text = (
+            render_transcript_from_srt(
+                raw_srt,
+                offset_ms=clip_start_ms or 0,
+            )
+            if args.transcript
+            else None
         )
         if resources.translator is not None:
             normalized_srt = resources.translator.translate_srt(normalized_srt)
 
         output_path.write_text(normalized_srt, encoding="utf-8", newline="")
+        if transcript_text is not None:
+            transcript_path.write_text(transcript_text, encoding="utf-8", newline="")
 
         if args.keep_audio:
             kept_audio = output_path.with_name(f"{output_path.stem}.normalized.wav")
@@ -618,6 +639,8 @@ def process_media_file(
             console.success(f"Kept normalized audio at {kept_audio}")
 
         console.success(f"Subtitle written to {output_path}")
+        if transcript_text is not None:
+            console.success(f"Transcript written to {transcript_path}")
     finally:
         if work_dir is not None:
             shutil.rmtree(work_dir, ignore_errors=True)

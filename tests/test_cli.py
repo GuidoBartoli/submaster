@@ -74,6 +74,18 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.max_context, 0)
         self.assertEqual(args.vad_model, "silero-v6.2.0")
 
+    def test_parser_accepts_transcript_flag(self) -> None:
+        """Verify that plain-text transcript output can be enabled from the CLI."""
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "input.mp4",
+                "--transcript",
+            ]
+        )
+
+        self.assertTrue(args.transcript)
+
     def test_parser_accepts_batch_flag(self) -> None:
         """Verify that folder processing can be enabled from the CLI."""
         parser = build_parser()
@@ -363,6 +375,46 @@ class CliTests(unittest.TestCase):
             self.assertEqual(
                 output_path.read_text(encoding="utf-8"),
                 "1\n00:10:00,000 --> 00:10:01,000\nhello\n",
+            )
+
+    def test_main_writes_plain_text_transcript_when_requested(self) -> None:
+        """Verify that `--transcript` writes a companion `.txt` dialogue file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.mp4"
+            raw_srt_path = Path(tmpdir) / "generated.srt"
+            output_path = Path(tmpdir) / "output.srt"
+            transcript_path = output_path.with_suffix(".txt")
+            work_dir = Path(tmpdir) / "work"
+            work_dir.mkdir()
+            input_path.write_bytes(b"fake")
+            raw_srt_path.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nhello\n\n"
+                "2\n00:00:01,000 --> 00:00:02,000\nhow are\nyou?\n",
+                encoding="utf-8",
+            )
+
+            with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
+                with patch("submaster.cli.has_video_stream", return_value=True):
+                    with patch("submaster.cli.create_work_dir", return_value=work_dir):
+                        with patch("submaster.cli.extract_audio", return_value=work_dir / "audio.wav"):
+                            with patch("submaster.cli.ensure_model_available", return_value=Path(tmpdir) / "whisper.bin"):
+                                with patch("submaster.cli.WhisperCppRunner") as whisper_runner_cls:
+                                    whisper_runner = whisper_runner_cls.return_value
+                                    whisper_runner.run.return_value = raw_srt_path
+                                    exit_code = main(
+                                        [
+                                            str(input_path),
+                                            "--output",
+                                            str(output_path),
+                                            "--transcript",
+                                            "--overwrite",
+                                        ]
+                                    )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                transcript_path.read_text(encoding="utf-8"),
+                "hello\nhow are you?\n",
             )
 
     def test_main_dismisses_active_progress_before_keyboard_interrupt_error(self) -> None:

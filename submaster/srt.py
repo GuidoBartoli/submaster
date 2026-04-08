@@ -133,6 +133,18 @@ def render_srt(cues: list[Cue]) -> str:
     return "\r\n\r\n".join(blocks) + "\r\n"
 
 
+def render_transcript(cues: list[Cue]) -> str:
+    """Render subtitle cues as plain dialogue text without timestamps.
+
+    :param cues: Subtitle cues to flatten into transcript lines.
+    :type cues: list[Cue]
+    :returns: Plain-text transcript with one normalized dialogue line per cue.
+    :rtype: str
+    """
+    transcript_lines = [" ".join(line.strip() for line in cue.text if line.strip()) for cue in cues]
+    return "\n".join(line for line in transcript_lines if line) + "\n"
+
+
 def shift_cues(cues: list[Cue], offset_ms: int) -> list[Cue]:
     """Return subtitle cues shifted by a fixed timestamp offset.
 
@@ -166,3 +178,17 @@ def normalize_srt(raw_srt: str, offset_ms: int = 0) -> str:
     :raises SubmasterError: If the input cannot be parsed as valid SRT.
     """
     return render_srt(shift_cues(parse_srt(raw_srt), offset_ms))
+
+
+def render_transcript_from_srt(raw_srt: str, offset_ms: int = 0) -> str:
+    """Parse SRT text and render a plain-text transcript.
+
+    :param raw_srt: Raw subtitle file contents to convert.
+    :type raw_srt: str
+    :param offset_ms: Optional millisecond offset applied before rendering.
+    :type offset_ms: int
+    :returns: Transcript text with timestamps removed.
+    :rtype: str
+    :raises SubmasterError: If the input cannot be parsed as valid SRT.
+    """
+    return render_transcript(shift_cues(parse_srt(raw_srt), offset_ms))
