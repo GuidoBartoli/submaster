@@ -112,7 +112,7 @@ class TranscriptCleaner:
 
         chunks = self._chunk_text(normalized_input)
         chunk_label = "chunk" if len(chunks) == 1 else "chunks"
-        self.console.note(
+        self.console.info(
             f"Prepared {len(chunks)} transcript cleanup {chunk_label}; progress updates after each chunk finishes."
         )
         progress = self.console.progress("llama", total=len(chunks), unit=" chunks")
@@ -126,7 +126,7 @@ class TranscriptCleaner:
         merged_text = self._merge_chunks(cleaned_chunks)
 
         if len(cleaned_chunks) > 1 and len(merged_text) <= self.final_pass_max_chars:
-            self.console.note("Running final transcript cleanup pass.")
+            self.console.info("Running final transcript cleanup pass.")
             merged_text = self._cleanup_pass(merged_text, show_spinner=True)
 
         return self._finalize_output(merged_text)

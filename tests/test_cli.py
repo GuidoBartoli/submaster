@@ -74,30 +74,30 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.max_context, 0)
         self.assertEqual(args.vad_model, "silero-v6.2.0")
 
-    def test_parser_accepts_transcript_flag(self) -> None:
-        """Verify that plain-text transcript output can be enabled from the CLI."""
+    def test_parser_accepts_transcribe_flag(self) -> None:
+        """Verify that plain-text transcription output can be enabled from the CLI."""
         parser = build_parser()
         args = parser.parse_args(
             [
                 "input.mp4",
-                "--transcript",
+                "--transcribe",
             ]
         )
 
-        self.assertTrue(args.transcript)
+        self.assertTrue(args.transcribe)
 
     def test_parser_accepts_cleanup_flag(self) -> None:
-        """Verify that transcript cleanup can be requested from the CLI."""
+        """Verify that transcription cleanup can be requested from the CLI."""
         parser = build_parser()
         args = parser.parse_args(
             [
                 "input.mp4",
-                "--transcript",
+                "--transcribe",
                 "--cleanup",
             ]
         )
 
-        self.assertTrue(args.transcript)
+        self.assertTrue(args.transcribe)
         self.assertTrue(args.cleanup)
 
     def test_parser_accepts_batch_flag(self) -> None:
@@ -391,13 +391,13 @@ class CliTests(unittest.TestCase):
                 "1\n00:10:00,000 --> 00:10:01,000\nhello\n",
             )
 
-    def test_main_writes_plain_text_transcript_when_requested(self) -> None:
-        """Verify that `--transcript` writes a companion `.txt` dialogue file."""
+    def test_main_writes_plain_text_transcription_when_requested(self) -> None:
+        """Verify that `--transcribe` writes a `_transcript.txt` dialogue file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.mp4"
             raw_srt_path = Path(tmpdir) / "generated.srt"
             output_path = Path(tmpdir) / "output.srt"
-            transcript_path = output_path.with_suffix(".txt")
+            transcript_path = output_path.with_name("input_transcript.txt")
             work_dir = Path(tmpdir) / "work"
             work_dir.mkdir()
             input_path.write_bytes(b"fake")
@@ -420,7 +420,7 @@ class CliTests(unittest.TestCase):
                                             str(input_path),
                                             "--output",
                                             str(output_path),
-                                            "--transcript",
+                                            "--transcribe",
                                             "--overwrite",
                                         ]
                                     )
@@ -431,13 +431,14 @@ class CliTests(unittest.TestCase):
                 "hello how are you?\n",
             )
 
-    def test_main_applies_cleanup_to_transcript_when_requested(self) -> None:
-        """Verify that `--cleanup` polishes transcript output without affecting subtitles."""
+    def test_main_applies_cleanup_to_transcription_when_requested(self) -> None:
+        """Verify that `--cleanup` writes a cleaned copy without changing the raw transcription."""
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.mp4"
             raw_srt_path = Path(tmpdir) / "generated.srt"
             output_path = Path(tmpdir) / "output.srt"
-            transcript_path = output_path.with_suffix(".txt")
+            transcript_path = output_path.with_name("input_transcript.txt")
+            cleanup_path = output_path.with_name("input_cleanup.txt")
             work_dir = Path(tmpdir) / "work"
             work_dir.mkdir()
             input_path.write_bytes(b"fake")
@@ -465,7 +466,7 @@ class CliTests(unittest.TestCase):
                                                         str(input_path),
                                                         "--output",
                                                         str(output_path),
-                                                        "--transcript",
+                                                        "--transcribe",
                                                         "--cleanup",
                                                         "--overwrite",
                                                     ]
@@ -474,6 +475,10 @@ class CliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(
                 transcript_path.read_text(encoding="utf-8"),
+                "hello there\n",
+            )
+            self.assertEqual(
+                cleanup_path.read_text(encoding="utf-8"),
                 "Hello there.\n",
             )
             transcript_cleaner_instance.clean_text.assert_called_once_with("hello there\n")
@@ -482,13 +487,14 @@ class CliTests(unittest.TestCase):
                 "1\n00:00:00,000 --> 00:00:01,000\nhello there\n",
             )
 
-    def test_main_ignores_cleanup_without_transcript(self) -> None:
+    def test_main_ignores_cleanup_without_transcribe(self) -> None:
         """Verify that `--cleanup` alone does not prepare the cleanup model or runner."""
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.mp4"
             raw_srt_path = Path(tmpdir) / "generated.srt"
             output_path = Path(tmpdir) / "output.srt"
-            transcript_path = output_path.with_suffix(".txt")
+            transcript_path = output_path.with_name("input_transcript.txt")
+            cleanup_path = output_path.with_name("input_cleanup.txt")
             work_dir = Path(tmpdir) / "work"
             work_dir.mkdir()
             input_path.write_bytes(b"fake")
@@ -521,6 +527,7 @@ class CliTests(unittest.TestCase):
             ensure_cleanup_model_mock.assert_not_called()
             llama_runner_cls.assert_not_called()
             self.assertFalse(transcript_path.exists())
+            self.assertFalse(cleanup_path.exists())
 
     def test_main_dismisses_active_progress_before_keyboard_interrupt_error(self) -> None:
         """Verify cancelled runs clear the progress bar before printing the error."""

@@ -189,12 +189,12 @@ class SubtitleTranslator:
             raise SubmasterError("No subtitle cues were provided for translation.")
 
         # Report translation progress at cue granularity even though work runs in batches.
-        self.console.note(
+        self.console.info(
             f"Translating subtitles to {self.target_language.name} with Tencent HY-MT."
         )
         batches = self._batch_cues(cues)
         batch_label = "batch" if len(batches) == 1 else "batches"
-        self.console.note(
+        self.console.info(
             f"Prepared {len(batches)} translation {batch_label}; progress updates after each batch finishes."
         )
         progress = self.console.progress("llama", total=len(cues), unit=" cues")

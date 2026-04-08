@@ -163,14 +163,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep the normalized WAV file next to the generated subtitle.",
     )
     parser.add_argument(
-        "--transcript",
+        "--transcribe",
         action="store_true",
-        help="Also write a plain-text transcript next to the generated subtitle.",
+        help="Also write a plain-text transcription next to the generated subtitle.",
     )
     parser.add_argument(
         "--cleanup",
         action="store_true",
-        help="Polish the transcript text with a local Qwen cleanup model. Has no effect without --transcript.",
+        help="Polish the transcription text with a local Qwen cleanup model. Has no effect without --transcribe.",
     )
     parser.add_argument(
         "--show-timings",
@@ -504,12 +504,20 @@ def build_processing_summary(
         summary += f" | Max context: {args.max_context}"
     if vad_model_path is not None:
         summary += " | VAD: on"
-    if args.transcript:
-        transcript_mode = "cleaned" if args.cleanup else "raw"
-        summary += f" | Transcript: {transcript_mode}"
+    if args.transcribe:
+        transcript_mode = "raw + cleanup" if args.cleanup else "raw"
+        summary += f" | Transcribe: {transcript_mode}"
     if args.translate_to:
         summary += f" | Translate to: {args.translate_to} ({args.translation_model})"
     return summary
+
+
+def build_transcription_output_paths(input_path: Path, output_path: Path) -> tuple[Path, Path]:
+    """Build the raw and cleaned transcription sidecar paths for one media file."""
+    base_name = input_path.stem
+    raw_path = output_path.with_name(f"{base_name}_transcript.txt")
+    cleaned_path = output_path.with_name(f"{base_name}_cleanup.txt")
+    return raw_path, cleaned_path
 
 
 def prepare_processing_resources(
@@ -526,7 +534,7 @@ def prepare_processing_resources(
     whisper_model_path = ensure_model_available(args.model, models_dir, console)
 
     llama_runner: LlamaCppRunner | None = None
-    if args.translate_to or (args.transcript and args.cleanup):
+    if args.translate_to or (args.transcribe and args.cleanup):
         llama_runner = LlamaCppRunner(
             console=console,
             cli_path=Path(args.llama_cli).expanduser() if args.llama_cli else None,
@@ -550,7 +558,7 @@ def prepare_processing_resources(
         )
 
     transcript_cleaner: TranscriptCleaner | None = None
-    if args.transcript and args.cleanup:
+    if args.transcribe and args.cleanup:
         cleanup_model_path = ensure_cleanup_model_available(
             DEFAULT_CLEANUP_MODEL,
             models_dir,
@@ -587,16 +595,20 @@ def process_media_file(
 ) -> None:
     """Run the full subtitle pipeline for one media file."""
     work_dir: Path | None = None
-    transcript_path = output_path.with_suffix(".txt")
+    transcript_path, cleanup_path = build_transcription_output_paths(input_path, output_path)
 
     try:
         if output_path.exists() and not args.overwrite:
             raise SubmasterError(
                 f"Output file already exists: {output_path}. Use --overwrite to replace it."
             )
-        if args.transcript and transcript_path.exists() and not args.overwrite:
+        if args.transcribe and transcript_path.exists() and not args.overwrite:
             raise SubmasterError(
-                f"Transcript file already exists: {transcript_path}. Use --overwrite to replace it."
+                f"Transcription file already exists: {transcript_path}. Use --overwrite to replace it."
+            )
+        if args.transcribe and args.cleanup and cleanup_path.exists() and not args.overwrite:
+            raise SubmasterError(
+                f"Cleanup file already exists: {cleanup_path}. Use --overwrite to replace it."
             )
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -654,17 +666,22 @@ def process_media_file(
                 raw_srt,
                 offset_ms=clip_start_ms or 0,
             )
-            if args.transcript
+            if args.transcribe
             else None
         )
-        if transcript_text is not None and resources.transcript_cleaner is not None:
-            transcript_text = resources.transcript_cleaner.clean_text(transcript_text)
+        cleaned_transcript_text = (
+            resources.transcript_cleaner.clean_text(transcript_text)
+            if transcript_text is not None and resources.transcript_cleaner is not None
+            else None
+        )
         if resources.translator is not None:
             normalized_srt = resources.translator.translate_srt(normalized_srt)
 
         output_path.write_text(normalized_srt, encoding="utf-8", newline="")
         if transcript_text is not None:
             transcript_path.write_text(transcript_text, encoding="utf-8", newline="")
+        if cleaned_transcript_text is not None:
+            cleanup_path.write_text(cleaned_transcript_text, encoding="utf-8", newline="")
 
         if args.keep_audio:
             kept_audio = output_path.with_name(f"{output_path.stem}.normalized.wav")
@@ -673,7 +690,9 @@ def process_media_file(
 
         console.success(f"Subtitle written to {output_path}")
         if transcript_text is not None:
-            console.success(f"Transcript written to {transcript_path}")
+            console.success(f"Transcription written to {transcript_path}")
+        if cleaned_transcript_text is not None:
+            console.success(f"Cleanup written to {cleanup_path}")
     finally:
         if work_dir is not None:
             shutil.rmtree(work_dir, ignore_errors=True)

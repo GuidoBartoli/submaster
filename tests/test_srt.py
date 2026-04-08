@@ -43,6 +43,28 @@ class SrtTests(unittest.TestCase):
             "1\r\n00:00:10,500 --> 00:00:11,500\r\nhello\r\n",
         )
 
+    def test_normalize_srt_resegments_oversized_cues_into_multiple_subtitles(self) -> None:
+        """Verify that very long cues are split into shorter timed subtitle chunks."""
+        raw = (
+            "1\n"
+            "00:00:57,000 --> 00:01:03,000\n"
+            "ok, ora le faccio cambiare di posto, quindi la mia per esempio era il 7 di picche, "
+            "lei che numero aveva in mente? 5? Guardi non faccio nulla eh, 1, 2, 3, 4, 5, "
+            "questa e la quinta ed e proprio il 7 di picche, che secondo me e straordinario.\n"
+        )
+
+        normalized = normalize_srt(raw)
+
+        self.assertGreater(normalized.count("\r\n\r\n"), 0)
+        cues = parse_srt(normalized)
+        self.assertGreater(len(cues), 1)
+        self.assertEqual(cues[0].start_ms, 57_000)
+        self.assertEqual(cues[-1].end_ms, 63_000)
+        for cue in cues:
+            self.assertLessEqual(len(cue.text), 2)
+            for line in cue.text:
+                self.assertLessEqual(len(line), 42)
+
     def test_parse_srt_rejects_reverse_ranges(self) -> None:
         """Verify that cues ending before they start are rejected."""
         with self.assertRaises(SubmasterError):

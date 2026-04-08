@@ -11,6 +11,14 @@ TIMESTAMP_RE = re.compile(
     r"(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})[,.](?P<millis>\d{3})"
 )
 _TRANSCRIPT_WHITESPACE_RE = re.compile(r"\s+")
+_SUBTITLE_BREAK_RE = re.compile(r"[,;:.!?]+$")
+_WORD_TOKEN_RE = re.compile(r"\S+")
+_MAX_SUBTITLE_LINE_CHARS = 42
+_MAX_SUBTITLE_LINES = 2
+_MAX_SUBTITLE_CUE_CHARS = _MAX_SUBTITLE_LINE_CHARS * _MAX_SUBTITLE_LINES
+_TARGET_SUBTITLE_CUE_CHARS = 64
+_MIN_SUBTITLE_SPLIT_CHARS = 28
+_MIN_SUBTITLE_CUE_MS = 900
 
 
 @dataclass(frozen=True)
@@ -134,6 +142,198 @@ def render_srt(cues: list[Cue]) -> str:
     return "\r\n\r\n".join(blocks) + "\r\n"
 
 
+def _normalize_cue_text_lines(lines: list[str]) -> str:
+    """Collapse subtitle lines into a single normalized prose string."""
+    return _TRANSCRIPT_WHITESPACE_RE.sub(
+        " ",
+        " ".join(line.strip() for line in lines if line.strip()),
+    ).strip()
+
+
+def _wrap_subtitle_lines(text: str) -> list[str]:
+    """Wrap subtitle prose into at most two readable lines when possible."""
+    words = text.split()
+    if not words:
+        return [""]
+
+    lines: list[str] = []
+    current: list[str] = []
+
+    for word in words:
+        candidate = " ".join([*current, word]).strip()
+        if current and len(candidate) > _MAX_SUBTITLE_LINE_CHARS:
+            lines.append(" ".join(current))
+            current = [word]
+            continue
+        current.append(word)
+
+    if current:
+        lines.append(" ".join(current))
+
+    return lines
+
+
+def _can_render_as_single_cue(text: str) -> bool:
+    """Check whether a cue fits comfortably within the subtitle layout limits."""
+    wrapped = _wrap_subtitle_lines(text)
+    return len(wrapped) <= _MAX_SUBTITLE_LINES and all(
+        len(line) <= _MAX_SUBTITLE_LINE_CHARS for line in wrapped
+    )
+
+
+def _is_preferred_split_point(word: str) -> bool:
+    """Prefer splitting after punctuation that naturally marks a short pause."""
+    return bool(_SUBTITLE_BREAK_RE.search(word))
+
+
+def _split_long_cue_text(text: str) -> list[str]:
+    """Split oversized subtitle prose into multiple readable cue-sized chunks."""
+    words = _WORD_TOKEN_RE.findall(text)
+    if not words:
+        return []
+
+    chunks: list[str] = []
+    current_words: list[str] = []
+
+    for word in words:
+        current_words.append(word)
+        current_text = " ".join(current_words)
+        current_length = len(current_text)
+
+        next_is_safe_break = _is_preferred_split_point(word) and current_length >= _MIN_SUBTITLE_SPLIT_CHARS
+        if current_length >= _TARGET_SUBTITLE_CUE_CHARS and next_is_safe_break:
+            chunks.append(current_text)
+            current_words = []
+            continue
+
+        if current_length > _MAX_SUBTITLE_CUE_CHARS and len(current_words) > 1:
+            overflow_word = current_words.pop()
+            chunks.append(" ".join(current_words))
+            current_words = [overflow_word]
+
+    if current_words:
+        chunks.append(" ".join(current_words))
+
+    # Merge tiny tail fragments back into the previous chunk when they would render poorly alone.
+    if len(chunks) >= 2 and len(chunks[-1]) < (_MIN_SUBTITLE_SPLIT_CHARS // 2):
+        merged_tail = f"{chunks[-2]} {chunks[-1]}".strip()
+        if len(merged_tail) <= (_MAX_SUBTITLE_CUE_CHARS + (_MIN_SUBTITLE_SPLIT_CHARS // 2)):
+            chunks[-2] = merged_tail
+            chunks.pop()
+
+    fitted_chunks: list[str] = []
+    for chunk in chunks:
+        if _can_render_as_single_cue(chunk):
+            fitted_chunks.append(chunk)
+            continue
+        fitted_chunks.extend(_split_chunk_to_fit(chunk))
+    return fitted_chunks
+
+
+def _split_chunk_to_fit(text: str) -> list[str]:
+    """Force a long chunk to fit by splitting on word boundaries near the midpoint."""
+    words = text.split()
+    if len(words) <= 1:
+        return [text]
+
+    midpoint = len(words) // 2
+    split_index = midpoint
+    while split_index > 1:
+        candidate = " ".join(words[:split_index])
+        if _can_render_as_single_cue(candidate):
+            break
+        split_index -= 1
+    if split_index <= 1:
+        split_index = midpoint
+
+    left = " ".join(words[:split_index]).strip()
+    right = " ".join(words[split_index:]).strip()
+    segments: list[str] = []
+    if left:
+        if _can_render_as_single_cue(left):
+            segments.append(left)
+        else:
+            segments.extend(_split_chunk_to_fit(left))
+    if right:
+        if _can_render_as_single_cue(right):
+            segments.append(right)
+        else:
+            segments.extend(_split_chunk_to_fit(right))
+    return segments
+
+
+def _allocate_segment_durations(
+    start_ms: int,
+    end_ms: int,
+    segments: list[str],
+) -> list[tuple[int, int]]:
+    """Allocate cue timings proportionally across split subtitle segments."""
+    total_duration = end_ms - start_ms
+    if total_duration <= 0 or len(segments) <= 1:
+        return [(start_ms, end_ms)]
+
+    weights = [max(1, len(segment)) for segment in segments]
+    total_weight = sum(weights)
+    remaining_start = start_ms
+    remaining_duration = total_duration
+    remaining_weight = total_weight
+    timings: list[tuple[int, int]] = []
+
+    for index, weight in enumerate(weights):
+        is_last = index == len(weights) - 1
+        if is_last:
+            segment_end = end_ms
+        else:
+            proportional = round(remaining_duration * (weight / remaining_weight))
+            min_duration = min(
+                _MIN_SUBTITLE_CUE_MS,
+                max(1, remaining_duration - (len(weights) - index - 1)),
+            )
+            segment_duration = max(min_duration, proportional)
+            max_end = end_ms - (len(weights) - index - 1)
+            segment_end = min(max_end, remaining_start + segment_duration)
+        timings.append((remaining_start, segment_end))
+        remaining_duration = end_ms - segment_end
+        remaining_weight -= weight
+        remaining_start = segment_end
+
+    return timings
+
+
+def _segment_cue(cue: Cue) -> list[Cue]:
+    """Split an oversized cue into smaller subtitle-friendly cues when needed."""
+    normalized_text = _normalize_cue_text_lines(cue.text)
+    if not normalized_text:
+        return [cue]
+
+    if _can_render_as_single_cue(normalized_text):
+        return [Cue(start_ms=cue.start_ms, end_ms=cue.end_ms, text=_wrap_subtitle_lines(normalized_text))]
+
+    segments = _split_long_cue_text(normalized_text)
+    if len(segments) <= 1:
+        return [Cue(start_ms=cue.start_ms, end_ms=cue.end_ms, text=_wrap_subtitle_lines(normalized_text))]
+
+    timings = _allocate_segment_durations(cue.start_ms, cue.end_ms, segments)
+    segmented_cues: list[Cue] = []
+    for (segment_start, segment_end), segment_text in zip(timings, segments, strict=True):
+        segmented_cues.append(
+            Cue(
+                start_ms=segment_start,
+                end_ms=segment_end,
+                text=_wrap_subtitle_lines(segment_text),
+            )
+        )
+    return segmented_cues
+
+
+def resegment_cues(cues: list[Cue]) -> list[Cue]:
+    """Rewrite cues into subtitle-friendly chunks and line lengths."""
+    segmented: list[Cue] = []
+    for cue in cues:
+        segmented.extend(_segment_cue(cue))
+    return segmented
+
+
 def render_transcript(cues: list[Cue]) -> str:
     """Render subtitle cues as plain dialogue text without timestamps.
 
@@ -214,7 +414,7 @@ def normalize_srt(raw_srt: str, offset_ms: int = 0) -> str:
     :rtype: str
     :raises SubmasterError: If the input cannot be parsed as valid SRT.
     """
-    return render_srt(shift_cues(parse_srt(raw_srt), offset_ms))
+    return render_srt(resegment_cues(shift_cues(parse_srt(raw_srt), offset_ms)))
 
 
 def render_transcript_from_srt(raw_srt: str, offset_ms: int = 0) -> str:

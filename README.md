@@ -16,7 +16,7 @@
 - Extracts and normalizes mono WAV audio using `ffmpeg` before transcription
 - Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
 - Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
-- Optionally polishes `--transcript` output with a local **Qwen3.5-9B** cleanup pass through `llama.cpp`
+- Optionally polishes `--transcribe` output with a local **Qwen3.5-9B** cleanup pass through `llama.cpp`
 - Downloads missing Whisper, HY-MT, and transcript-cleanup model files on demand into the local `models/` cache
 - Works on Linux, macOS, and Windows when `ffmpeg`, `whisper.cpp`, and `llama.cpp` are available
 - Prefers GPU execution in `--device auto` when the selected native runtime appears GPU-capable
@@ -87,14 +87,14 @@ The models are downloaded automatically into `models/` the first time translatio
 
 ## Transcript Cleanup Backend
 
-Plain-text transcript cleanup uses **Qwen3.5-9B Q4_K_M GGUF** through `llama.cpp`.
+Plain-text transcription cleanup uses **Qwen3.5-9B Q4_K_M GGUF** through `llama.cpp`.
 
-- Enabled with `--transcript --cleanup`
+- Enabled with `--transcribe --cleanup`
 - Uses a chunked cleanup pipeline with a `16K` llama.cpp context window
-- Keeps subtitle generation unchanged and only rewrites the companion `.txt` transcript
-- Has no effect when `--transcript` is not enabled
+- Keeps subtitle generation unchanged and writes a cleaned companion `.txt` file
+- Has no effect when `--transcribe` is not enabled
 
-The cleanup model is downloaded automatically into `models/` the first time transcript polishing is requested.
+The cleanup model is downloaded automatically into `models/` the first time transcription polishing is requested.
 
 ## How Native Runtimes Are Located
 
@@ -228,10 +228,10 @@ Translate the generated subtitles into Italian:
 submaster input.mp4 --translate-to it
 ```
 
-Generate a plain-text transcript and clean it locally:
+Generate a plain-text transcription and clean it locally:
 
 ```bash
-submaster input.mp4 --transcript --cleanup
+submaster input.mp4 --transcribe --cleanup
 ```
 
 Common patterns:
@@ -246,7 +246,7 @@ submaster input.mp4 --vad-model ./models/ggml-silero-v6.2.0.bin
 submaster input.mp4 --max-context -1
 submaster input.mp4 --translate-to it --translation-model large
 submaster input.mp4 --translate-to ja --device gpu --llama-cli ./llama.cpp/build/bin/llama-cli
-submaster input.mp4 --transcript --cleanup
+submaster input.mp4 --transcribe --cleanup
 submaster input.mkv --output ./subs/
 submaster ./videos --batch --output ./subs/
 submaster input.mov --keep-audio
@@ -259,7 +259,7 @@ On Windows, `--output .\subs\`, `--whisper-cli .\whisper.cpp\build\bin\Release\w
 
 If `--translate-to` is set, the written `.srt` file contains the translated subtitles. If you want both source-language and translated subtitle files, run the command twice with different output paths.
 
-`--transcript` writes a companion plain-text `.txt` file next to the subtitle output. Add `--cleanup` to run an extra local Qwen transcript-polishing stage on that text only.
+`--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
 
 `--range START END` limits extraction, transcription, and optional translation to the selected source clip while keeping subtitle timestamps aligned to the original video timeline. Accepted formats are `SS`, `MM:SS`, or `HH:MM:SS` with optional `.mmm` or `,mmm` milliseconds.
 
