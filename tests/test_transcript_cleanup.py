@@ -71,6 +71,7 @@ class TranscriptCleanupTests(unittest.TestCase):
 
         return SimpleNamespace(
             note=lambda message: None,
+            info=lambda message: None,
             progress=lambda label, total, unit="": DummyProgress(),
         )
 
