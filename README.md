@@ -293,12 +293,6 @@ Run the test suite:
 python -m unittest
 ```
 
-Check the CLI wiring:
-
-```bash
-python main.py --help
-```
-
 ## Upstream References
 
 - OpenAI Whisper: <https://github.com/openai/whisper>
