@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -8,6 +9,12 @@ from pathlib import Path
 from .config import DEFAULT_SAMPLE_RATE
 from .console import Console
 from .errors import SubmasterError
+
+
+# Expected chapter line format: "HH:MM:SS Chapter title"
+_CHAPTER_RE = re.compile(
+    r"^(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})\s+(?P<title>.+)$"
+)
 
 
 def _run_probe(input_path: Path, entries: str, target: str) -> str:
@@ -216,3 +223,138 @@ def extract_audio(
 
     console.info(f"Prepared audio: {destination_path}")
     return destination_path
+
+
+def parse_chapters(chapters_path: Path) -> list[dict[str, int | str]]:
+    """Parse a plain-text chapter file into a list of chapter dicts.
+
+    :param chapters_path: Path to a text file with lines of the form ``HH:MM:SS Title``.
+    :type chapters_path: pathlib.Path
+    :returns: List of dicts with ``title`` (str) and ``start`` (int milliseconds) keys.
+    :rtype: list[dict[str, int | str]]
+    :raises SubmasterError: If any line is malformed or the file contains no chapters.
+    """
+    chapters: list[dict[str, int | str]] = []
+    for raw_line in chapters_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        match = _CHAPTER_RE.fullmatch(line)
+        if match is None:
+            raise SubmasterError(f"Wrong chapter format: '{raw_line}'")
+
+        hours = int(match.group("hours"))
+        minutes = int(match.group("minutes"))
+        seconds = int(match.group("seconds"))
+        # The regex only checks digit count, not value range — reject out-of-range fields manually
+        if minutes > 59 or seconds > 59:
+            raise SubmasterError(f"Wrong chapter format: '{raw_line}'")
+
+        # ffmetadata timestamps are expressed in milliseconds
+        start_ms = ((hours * 3_600) + (minutes * 60) + seconds) * 1_000
+        chapters.append({"title": match.group("title"), "start": start_ms})
+
+    if not chapters:
+        raise SubmasterError("No chapters found in the chapter file.")
+
+    return chapters
+
+
+def _build_chapter_metadata(chapters: list[dict[str, int | str]], duration_ms: int) -> str:
+    """Return the ffmetadata chapter block to append to the container metadata."""
+    blocks: list[str] = []
+    for index, chapter in enumerate(chapters):
+        # Last chapter ends at the media duration; all others end 1 ms before the next chapter starts
+        next_start = duration_ms if index == len(chapters) - 1 else int(chapters[index + 1]["start"]) - 1
+        blocks.append(
+            "\n".join(
+                [
+                    "[CHAPTER]",
+                    "TIMEBASE=1/1000",
+                    f"START={chapter['start']}",
+                    f"END={next_start}",
+                    f"title={chapter['title']}",
+                ]
+            )
+        )
+    # Leading newline separates chapters from the global metadata header above
+    return "\n" + "\n".join(blocks) + "\n"
+
+
+def _export_existing_metadata(input_path: Path, metadata_path: Path) -> None:
+    """Dump the container metadata of a video to an ffmetadata file."""
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(input_path), "-f", "ffmetadata", str(metadata_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    # ffmpeg can exit 0 yet still fail to write the file when the container has no metadata
+    if result.returncode != 0 or not metadata_path.exists():
+        raise SubmasterError("Unable to extract video metadata.")
+
+
+def _write_chapter_video(input_path: Path, metadata_path: Path, output_path: Path) -> None:
+    """Copy a video file while replacing its container metadata."""
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_path),
+            "-i",
+            str(metadata_path),
+            # Use the second input (ffmetadata file) as the metadata source
+            "-map_metadata",
+            "1",
+            # Stream-copy avoids re-encoding; only the container metadata changes
+            "-codec",
+            "copy",
+            str(output_path),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SubmasterError("Unable to write chapter-embedded video.")
+
+
+def embed_chapters(
+    input_path: Path,
+    chapters_path: Path,
+    output_path: Path,
+    console: Console,
+) -> None:
+    """Embed chapter timestamps from a text file into a copy of the video.
+
+    :param input_path: Source video file.
+    :type input_path: pathlib.Path
+    :param chapters_path: Plain-text chapter file (``HH:MM:SS Title`` per line).
+    :type chapters_path: pathlib.Path
+    :param output_path: Destination video file to create.
+    :type output_path: pathlib.Path
+    :param console: Console used for progress and success output.
+    :type console: Console
+    :raises SubmasterError: If chapter parsing or any ffmpeg step fails.
+    """
+    chapters = parse_chapters(chapters_path)
+    console.info(f"Embedding {len(chapters)} chapter(s) into '{output_path.name}'.")
+
+    duration_s = probe_duration_seconds(input_path)
+    if duration_s is None:
+        raise SubmasterError("Unable to read video duration.")
+    duration_ms = int(duration_s * 1_000)
+
+    chapter_metadata = _build_chapter_metadata(chapters, duration_ms)
+
+    with tempfile.TemporaryDirectory(prefix="submaster-chapters-") as temp_dir:
+        metadata_path = Path(temp_dir) / "metadata.txt"
+        # Start from the video's existing metadata so non-chapter tags are preserved
+        _export_existing_metadata(input_path, metadata_path)
+        with metadata_path.open("a", encoding="utf-8") as metadata_file:
+            metadata_file.write(chapter_metadata)
+        _write_chapter_video(input_path, metadata_path, output_path)
+
+    console.success(f"Chapter-embedded video written to {output_path}")

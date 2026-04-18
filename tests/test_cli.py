@@ -535,6 +535,73 @@ class CliTests(unittest.TestCase):
             self.assertFalse(transcript_path.exists())
             self.assertFalse(cleanup_path.exists())
 
+    def test_parser_accepts_chapters_flag(self) -> None:
+        """Verify that --chapters stores the provided file path."""
+        parser = build_parser()
+        args = parser.parse_args(["input.mp4", "--chapters", "chapters.txt"])
+
+        self.assertEqual(args.chapters, "chapters.txt")
+
+    def test_main_rejects_batch_combined_with_chapters(self) -> None:
+        """Verify that --batch and --chapters together produce an error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "videos"
+            input_dir.mkdir()
+
+            with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
+                exit_code = main(
+                    [str(input_dir), "--batch", "--chapters", "chapters.txt"]
+                )
+
+        self.assertEqual(exit_code, 1)
+
+    def test_main_calls_embed_chapters_when_flag_is_set(self) -> None:
+        """Verify that --chapters triggers embed_chapters with the correct paths."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.mp4"
+            raw_srt_path = Path(tmpdir) / "generated.srt"
+            output_path = Path(tmpdir) / "output.srt"
+            chapters_path = Path(tmpdir) / "chapters.txt"
+            work_dir = Path(tmpdir) / "work"
+            work_dir.mkdir()
+            input_path.write_bytes(b"fake")
+            chapters_path.write_text("00:00:00 Intro\n", encoding="utf-8")
+            raw_srt_path.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8"
+            )
+
+            embed_calls: list[tuple] = []
+
+            def fake_embed_chapters(inp, chaps, out, console):
+                embed_calls.append((inp, chaps, out))
+
+            with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
+                with patch("submaster.cli.has_video_stream", return_value=True):
+                    with patch("submaster.cli.create_work_dir", return_value=work_dir):
+                        with patch("submaster.cli.extract_audio", return_value=work_dir / "audio.wav"):
+                            with patch("submaster.cli.ensure_model_available", return_value=Path(tmpdir) / "whisper.bin"):
+                                with patch("submaster.cli.WhisperCppRunner") as whisper_runner_cls:
+                                    whisper_runner = whisper_runner_cls.return_value
+                                    whisper_runner.run.return_value = raw_srt_path
+                                    with patch("submaster.cli.embed_chapters", side_effect=fake_embed_chapters):
+                                        exit_code = main(
+                                            [
+                                                str(input_path),
+                                                "--output",
+                                                str(output_path),
+                                                "--chapters",
+                                                str(chapters_path),
+                                                "--overwrite",
+                                            ]
+                                        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(embed_calls), 1)
+        inp, chaps, out = embed_calls[0]
+        self.assertEqual(inp, input_path.resolve())
+        self.assertEqual(chaps, chapters_path.resolve())
+        self.assertEqual(out, input_path.with_stem("input_chapters").resolve())
+
     def test_main_dismisses_active_progress_before_keyboard_interrupt_error(self) -> None:
         """Verify cancelled runs clear the progress bar before printing the error."""
         events: list[str] = []

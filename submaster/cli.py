@@ -21,7 +21,7 @@ from .config import (
 from .console import Console
 from .errors import SubmasterError
 from .llama_cpp import LlamaCppRunner
-from .media import create_work_dir, extract_audio, has_video_stream
+from .media import create_work_dir, embed_chapters, extract_audio, has_video_stream
 from .models import (
     ensure_cleanup_model_available,
     ensure_model_available,
@@ -198,6 +198,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--llama-cli",
         help="Path to a llama.cpp executable such as llama-cli.",
+    )
+    parser.add_argument(
+        "--chapters",
+        metavar="FILE",
+        help=(
+            "Path to a plain-text chapter file (one 'HH:MM:SS Title' entry per line). "
+            "When set, a chapter-embedded copy of the input video is written next to it "
+            "with a '_chapters' suffix. Cannot be used with --batch."
+        ),
     )
     return parser
 
@@ -756,6 +765,9 @@ def main(argv: list[str] | None = None) -> int:
         clip_range = resolve_clip_range(args.range)
         models_dir = Path(args.models_dir).expanduser().resolve()
 
+        if args.batch and args.chapters:
+            raise SubmasterError("--chapters cannot be used together with --batch.")
+
         input_path = resolve_input_path(args.input)
         if not input_path.exists():
             raise SubmasterError(f"Input file does not exist: {input_path}")
@@ -839,6 +851,15 @@ def main(argv: list[str] | None = None) -> int:
             clip_range,
             skip_video_validation=True,
         )
+
+        if args.chapters:
+            chapters_path = Path(args.chapters).expanduser().resolve()
+            if not chapters_path.exists():
+                raise SubmasterError(f"Chapter file does not exist: {chapters_path}")
+            # e.g. video.mp4 → video_chapters.mp4, written next to the original
+            chapters_output = input_path.with_stem(input_path.stem + "_chapters")
+            embed_chapters(input_path, chapters_path, chapters_output, console)
+
         return 0
     except KeyboardInterrupt:
         # Map user cancellation to the conventional shell exit code.

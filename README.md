@@ -17,6 +17,7 @@
 - Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
 - Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
 - Optionally polishes `--transcribe` output with a local **Qwen3.5-9B** cleanup pass through `llama.cpp`
+- Optionally embeds chapter markers from a plain-text file into a copy of the input video with `--chapters`
 - Downloads missing Whisper, HY-MT, and transcript-cleanup model files on demand into the local `models/` cache
 - Works on Linux, macOS, and Windows when `ffmpeg`, `whisper.cpp`, and `llama.cpp` are available
 - Prefers GPU execution in `--device auto` when the selected native runtime appears GPU-capable
@@ -253,6 +254,7 @@ submaster input.mov --keep-audio
 submaster input.mp4 --whisper-cli ./whisper.cpp/build/bin/whisper-cli
 submaster input.mp4 --show-timings
 submaster input.mp4 --show-model-info
+submaster input.mp4 --chapters chapters.txt
 ```
 
 On Windows, `--output .\subs\`, `--whisper-cli .\whisper.cpp\build\bin\Release\whisper-cli.exe`, and `--llama-cli .\llama.cpp\build\bin\Release\llama-cli.exe` work as expected.
@@ -260,6 +262,20 @@ On Windows, `--output .\subs\`, `--whisper-cli .\whisper.cpp\build\bin\Release\w
 If `--translate-to` is set, the written `.srt` file keeps the original-language subtitles and an additional `<output-stem>_<language_code>.srt` file is written with the translated subtitles.
 
 `--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
+
+`--chapters FILE` reads chapter timestamps from a plain-text file and produces a chapter-embedded copy of the input video named `<input-stem>_chapters.<ext>` next to the original. Each non-empty line must follow the format `HH:MM:SS Title`. Cannot be combined with `--batch`.
+
+Example chapter file:
+
+```text
+00:00:00 Introduction
+00:23:20 Start
+00:40:30 First Performance
+00:40:56 Break
+01:04:44 Second Performance
+01:24:45 Crowd Shots
+01:27:45 Credits
+```
 
 `--range START END` limits extraction, transcription, and optional translation to the selected source clip while keeping subtitle timestamps aligned to the original video timeline. Accepted formats are `SS`, `MM:SS`, or `HH:MM:SS` with optional `.mmm` or `,mmm` milliseconds.
 
@@ -281,34 +297,6 @@ Check the CLI wiring:
 
 ```bash
 python main.py --help
-```
-
-## Standalone Chapter Utility
-
-This repository also includes a separate helper script at [`utils/add_chapters.py`](utils/add_chapters.py). It stays outside the main `submaster` CLI so it can be run independently when you only want to embed chapter markers from a text file into an existing video.
-
-Usage:
-
-```bash
-python utils/add_chapters.py <input> <chapters> <output>
-```
-
-Arguments:
-
-- `input`: Input video file in any format supported by `ffmpeg`
-- `chapters`: Text file where each non-empty line contains `HH:MM:SS Title`
-- `output`: Output video file to create; `.mp4` is added automatically if you omit a suffix
-
-Example chapter file:
-
-```text
-00:00:00 Introduction
-00:23:20 Start
-00:40:30 First Performance
-00:40:56 Break
-01:04:44 Second Performance
-01:24:45 Crowd Shots
-01:27:45 Credits
 ```
 
 ## Upstream References
