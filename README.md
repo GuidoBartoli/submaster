@@ -285,12 +285,12 @@ python main.py --help
 
 ## Standalone Chapter Utility
 
-This repository also includes a separate helper script at [`scripts/add_chapters.py`](scripts/add_chapters.py). It stays outside the main `submaster` CLI so it can be run independently when you only want to embed chapter markers from a text file into an existing video.
+This repository also includes a separate helper script at [`utils/add_chapters.py`](utils/add_chapters.py). It stays outside the main `submaster` CLI so it can be run independently when you only want to embed chapter markers from a text file into an existing video.
 
 Usage:
 
 ```bash
-python scripts/add_chapters.py <input> <chapters> <output>
+python utils/add_chapters.py <input> <chapters> <output>
 ```
 
 Arguments:
