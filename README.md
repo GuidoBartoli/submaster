@@ -76,62 +76,14 @@ python setup_runtimes.py --no-rebuild       # skip build, re-verify executables 
 
 On Windows, Ninja must be installed (via `winget install Ninja-build.Ninja`, Chocolatey, or Scoop) so cmake can run from any terminal. Without Ninja, cmake falls back to NMake Makefiles, which requires a Visual Studio Developer Command Prompt.
 
-## Installation
-
-### Python Package
-
-Install the package manually:
-
-```bash
-python -m pip install -e .
-```
-
-On Windows, `py -3 -m pip install -e .` works as well.
-
-Or run it without installation:
-
-```bash
-python main.py --help
-```
-
-Verify the toolchain:
-
-```bash
-python --version
-ffmpeg -version
-ffprobe -version
-whisper-cli -h
-llama-cli -h
-submaster --help
-```
-
 ## Usage
 
-Basic transcription:
+- Basic transcription: `submaster input.mp4`
+- Batch-process all video files in a folder: `submaster ./videos --batch`
+- Translate the generated subtitles into Italian: `submaster input.mp4 --translate it`
+- Generate a plain-text transcription and clean it locally: `submaster input.mp4 --transcribe --cleanup`
 
-```bash
-submaster input.mp4
-```
-
-Batch-process all video files in a folder:
-
-```bash
-submaster ./videos --batch
-```
-
-Translate the generated subtitles into Italian:
-
-```bash
-submaster input.mp4 --translate it
-```
-
-Generate a plain-text transcription and clean it locally:
-
-```bash
-submaster input.mp4 --transcribe --cleanup
-```
-
-On Windows, `--output .\subs\` works as expected.
+### Options
 
 If `--translate` is set, the written `.srt` file keeps the original-language subtitles and an additional `<output-stem>_<language_code>.srt` file is written with the translated subtitles.
 
