@@ -37,12 +37,44 @@ The bundled fallback is only for `whisper.cpp` on Linux `x86_64`. Translation an
 ## Requirements
 
 - Python 3.10+
-- `ffmpeg`
-- `ffprobe`
-- a working `whisper.cpp` executable (`whisper-cli` recommended)
-- a working `llama.cpp` executable (`llama-cli` recommended) if subtitle translation or transcript cleanup is enabled
+- `ffmpeg` and `ffprobe`
+- `whisper-cli` and `llama-cli` executables — provided by `setup_runtimes.py` (see Quick Setup below)
 
 `submaster` has no third-party Python runtime dependencies. The package metadata in [`pyproject.toml`](pyproject.toml) allows Python `>=3.10`. Python 3.12 is the default tested setup in this repository.
+
+## Quick Setup
+
+Run the included setup script from the project root to clone, build, and install both native runtimes automatically:
+
+```bash
+python setup_runtimes.py
+```
+
+The script:
+
+1. Detects your GPU (CUDA, Vulkan, Metal, or CPU fallback)
+2. Checks for required build tools (`git`, `cmake`, C/C++ compiler, `ninja`) and prints per-platform install hints for anything missing
+3. Clones `whisper.cpp` and `llama.cpp` into the project root and builds them with the correct flags
+4. Verifies the resulting executables — `submaster` picks them up automatically from those locations
+
+Install build prerequisites first:
+
+- Ubuntu or Debian: `sudo apt install git cmake ninja-build build-essential`
+- macOS with Homebrew: `brew install git cmake ninja`
+- Windows: install [Git](https://git-scm.com/), [CMake](https://cmake.org/), and [Ninja](https://ninja-build.org/) via `winget`, Chocolatey, or Scoop
+
+For CUDA builds, the [NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) is also required. For Vulkan builds, install the [LunarG Vulkan SDK](https://vulkan.lunarg.com/) (Windows) or `libvulkan-dev` (Linux).
+
+Common options:
+
+```bash
+python setup_runtimes.py --backend cpu      # force a CPU-only build
+python setup_runtimes.py --backend cuda     # force CUDA regardless of detection
+python setup_runtimes.py --no-update        # offline: skip git pull
+python setup_runtimes.py --no-rebuild       # skip build, re-verify executables only
+```
+
+On Windows, Ninja must be installed (via `winget install Ninja-build.Ninja`, Chocolatey, or Scoop) so cmake can run from any terminal. Without Ninja, cmake falls back to NMake Makefiles, which requires a Visual Studio Developer Command Prompt.
 
 ## Installation
 
@@ -73,7 +105,9 @@ llama-cli -h
 submaster --help
 ```
 
-## Translation Backend
+## Translation and Transcription
+
+### Translation Backend
 
 Subtitle translation uses **Tencent HY-MT 1.5 GGUF** models through `llama.cpp`.
 
@@ -86,7 +120,7 @@ The project intentionally downloads the `Q4_K_M` variants instead of full-precis
 
 The models are downloaded automatically into `models/` the first time translation is requested.
 
-## Transcript Cleanup Backend
+### Transcript Cleanup Backend
 
 Plain-text transcription cleanup uses **Qwen3.5-9B Q4_K_M GGUF** through `llama.cpp`.
 
@@ -103,111 +137,26 @@ The cleanup model is downloaded automatically into `models/` the first time tran
 
 Lookup order:
 
-- `--whisper-cli`
-- `WHISPER_CPP_CLI`
+- `WHISPER_CPP_CLI` environment variable
 - Conda, `PATH`, and common local build outputs
 - bundled repo fallback on Linux `x86_64` only
 
-Common local build outputs include:
+Common local build outputs (produced by `setup_runtimes.py`):
 
-- Linux and macOS: `./whisper.cpp/build/bin/whisper-cli`, `./build/bin/whisper-cli`
-- Windows: `.\whisper.cpp\build\bin\Release\whisper-cli.exe`, `.\build\bin\Release\whisper-cli.exe`, plus non-`Release` `.exe` variants
+- Linux and macOS: `./whisper.cpp/build/bin/whisper-cli`
+- Windows: `.\whisper.cpp\build\bin\Release\whisper-cli.exe`
 
 ### `llama.cpp`
 
 Lookup order:
 
-- `--llama-cli`
-- `LLAMA_CPP_CLI`
+- `LLAMA_CPP_CLI` environment variable
 - Conda, `PATH`, and common local build outputs
 
-Common local build outputs include:
+Common local build outputs (produced by `setup_runtimes.py`):
 
-- Linux and macOS: `./llama.cpp/build/bin/llama-cli`, `./build/bin/llama-cli`
-- Windows: `.\llama.cpp\build\bin\Release\llama-cli.exe`, `.\build\bin\Release\llama-cli.exe`, plus non-`Release` `.exe` variants
-
-## Building `whisper.cpp` from source
-
-### CPU builds
-
-```bash
-git clone https://github.com/ggml-org/whisper.cpp.git
-cmake -S whisper.cpp -B whisper.cpp/build -G Ninja
-cmake --build whisper.cpp/build -j --config Release
-```
-
-Typical outputs are `./whisper.cpp/build/bin/whisper-cli` on Linux/macOS and `.\whisper.cpp\build\bin\Release\whisper-cli.exe` on Windows. Add that directory to `PATH` or pass it explicitly:
-
-```bash
-submaster input.mp4 --whisper-cli ./whisper.cpp/build/bin/whisper-cli
-```
-
-Windows PowerShell equivalent:
-
-```powershell
-submaster input.mp4 --whisper-cli .\whisper.cpp\build\bin\Release\whisper-cli.exe
-```
-
-### GPU builds (CUDA example)
-
-```bash
-git clone https://github.com/ggml-org/whisper.cpp.git
-cmake -S whisper.cpp -B whisper.cpp/build -G Ninja -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=OFF
-cmake --build whisper.cpp/build -j --config Release
-```
-
-Before building, confirm that `nvcc` is available:
-
-```bash
-nvcc --version
-```
-
-## Building `llama.cpp` from source
-
-### CPU builds
-
-```bash
-git clone https://github.com/ggml-org/llama.cpp.git
-cmake -S llama.cpp -B llama.cpp/build -G Ninja
-cmake --build llama.cpp/build -j --config Release
-```
-
-Typical outputs are `./llama.cpp/build/bin/llama-cli` on Linux/macOS and `.\llama.cpp\build\bin\Release\llama-cli.exe` on Windows. Add that directory to `PATH` or pass it explicitly:
-
-```bash
-submaster input.mp4 --translate-to it --llama-cli ./llama.cpp/build/bin/llama-cli
-```
-
-Windows PowerShell equivalent:
-
-```powershell
-submaster input.mp4 --translate-to it --llama-cli .\llama.cpp\build\bin\Release\llama-cli.exe
-```
-
-Install `ffmpeg`, `git`, `cmake`, and `ninja` first:
-
-- Ubuntu or Debian: `sudo apt install ffmpeg git cmake ninja-build build-essential`
-- macOS with Homebrew: `brew install ffmpeg git cmake ninja`
-- Windows: install the same tools with `winget`, Chocolatey, Scoop, or another local package manager, then build `whisper.cpp` and `llama.cpp` as shown above
-
-### GPU builds
-
-#### CUDA 
-
-```bash
-git clone https://github.com/ggml-org/llama.cpp.git
-cmake -S llama.cpp -B llama.cpp/build -G Ninja -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=OFF
-cmake --build llama.cpp/build -j --config Release
-```
-
-#### Vulkan
-
-```bash
-cmake -S llama.cpp -B llama.cpp/build -G Ninja -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF
-cmake --build llama.cpp/build -j --config Release
-```
-
-On macOS, `whisper.cpp` and `llama.cpp` typically use Metal when the selected build includes it. On Windows, `submaster` auto-detects common local `.exe` build outputs and nearby GPU backend DLLs. If you keep multiple builds around, pass `--whisper-cli` and `--llama-cli` explicitly.
+- Linux and macOS: `./llama.cpp/build/bin/llama-cli`
+- Windows: `.\llama.cpp\build\bin\Release\llama-cli.exe`
 
 ## Usage
 
@@ -226,7 +175,7 @@ submaster ./videos --batch
 Translate the generated subtitles into Italian:
 
 ```bash
-submaster input.mp4 --translate-to it
+submaster input.mp4 --translate it
 ```
 
 Generate a plain-text transcription and clean it locally:
@@ -235,31 +184,9 @@ Generate a plain-text transcription and clean it locally:
 submaster input.mp4 --transcribe --cleanup
 ```
 
-Common patterns:
+On Windows, `--output .\subs\` works as expected.
 
-```bash
-submaster input.mp4 --model turbo --device gpu
-submaster input.mp4 --language en --model small
-submaster input.mp4 --range 00:10:00 00:12:30
-submaster input.mp4 --range 600 750 --translate-to it
-submaster input.mp4 --vad-model silero-v6.2.0
-submaster input.mp4 --vad-model ./models/ggml-silero-v6.2.0.bin
-submaster input.mp4 --max-context -1
-submaster input.mp4 --translate-to it --translation-model large
-submaster input.mp4 --translate-to ja --device gpu --llama-cli ./llama.cpp/build/bin/llama-cli
-submaster input.mp4 --transcribe --cleanup
-submaster input.mkv --output ./subs/
-submaster ./videos --batch --output ./subs/
-submaster input.mov --keep-audio
-submaster input.mp4 --whisper-cli ./whisper.cpp/build/bin/whisper-cli
-submaster input.mp4 --show-timings
-submaster input.mp4 --show-model-info
-submaster input.mp4 --chapters chapters.txt
-```
-
-On Windows, `--output .\subs\`, `--whisper-cli .\whisper.cpp\build\bin\Release\whisper-cli.exe`, and `--llama-cli .\llama.cpp\build\bin\Release\llama-cli.exe` work as expected.
-
-If `--translate-to` is set, the written `.srt` file keeps the original-language subtitles and an additional `<output-stem>_<language_code>.srt` file is written with the translated subtitles.
+If `--translate` is set, the written `.srt` file keeps the original-language subtitles and an additional `<output-stem>_<language_code>.srt` file is written with the translated subtitles.
 
 `--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
 
@@ -282,8 +209,6 @@ Example chapter file:
 `--batch` treats the positional input as a folder and probes each direct child file with `ffprobe`. Files that do not expose a video stream are skipped. Batch outputs default to `<source-stem>.srt` next to each source file, or into a shared directory when `--output DIR` is provided.
 
 `--max-context` controls how much previously decoded text `whisper.cpp` feeds back into later decode windows. Submaster defaults this to `0` to reduce repetition loops on long recordings. Pass `--max-context -1` to restore the upstream `whisper.cpp` behavior.
-
-`--vad-model VALUE` enables `whisper.cpp` voice activity detection. `VALUE` can be either a local file path or one of the built-in names `silero-v5.1.2` and `silero-v6.2.0`. Named VAD models are downloaded automatically into `models/` from the official `ggml-org/whisper-vad` repository on Hugging Face.
 
 ## Validation
 

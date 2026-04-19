@@ -26,8 +26,6 @@ from .models import (
     ensure_cleanup_model_available,
     ensure_model_available,
     ensure_translation_model_available,
-    ensure_vad_model_available,
-    resolve_vad_model_spec,
 )
 from .srt import normalize_srt, render_transcript_from_srt
 from .transcript_cleanup import TranscriptCleaner
@@ -47,7 +45,6 @@ class ProcessingResources:
     whisper_model_path: Path
     translator: SubtitleTranslator | None
     transcript_cleaner: TranscriptCleaner | None
-    vad_model_path: Path | None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -92,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     # handling, and runtime selection.
     parser.add_argument(
         "-m",
-        "--model",
+        "--wmodel",
         default=DEFAULT_MODEL,
         choices=tuple(MODEL_SPECS),
         help="Whisper model to use.",
@@ -115,23 +112,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Folder used to cache ggml whisper models.",
     )
     parser.add_argument(
-        "--whisper-cli",
-        help="Path to a whisper.cpp executable such as whisper-cli.",
-    )
-    parser.add_argument(
         "--max-context",
         type=int,
         default=DEFAULT_WHISPER_MAX_CONTEXT,
         help=(
             "Maximum prior-text tokens fed back into whisper.cpp. "
             "Use 0 to disable rolling text context; use -1 to restore the upstream default."
-        ),
-    )
-    parser.add_argument(
-        "--vad-model",
-        help=(
-            "Enable whisper.cpp VAD using a local model path or a built-in name "
-            "such as 'silero-v6.2.0'."
         ),
     )
     parser.add_argument(
@@ -177,27 +163,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Display the final whisper.cpp timing summary.",
     )
-    parser.add_argument(
-        "--show-model-info",
-        action="store_true",
-        help="Display whisper.cpp model-load metadata.",
-    )
 
     # Translation options stay optional and are only used when the caller
     # asks for a second-language subtitle file.
     parser.add_argument(
-        "--translate-to",
+        "--translate",
         help="Translate the generated subtitles into the given target language code or name.",
     )
     parser.add_argument(
-        "--translation-model",
+        "--tmodel",
         default=DEFAULT_TRANSLATION_MODEL,
         choices=tuple(TRANSLATION_MODEL_SPECS),
-        help="Tencent HY-MT translation model size to use when --translate-to is set.",
-    )
-    parser.add_argument(
-        "--llama-cli",
-        help="Path to a llama.cpp executable such as llama-cli.",
+        help="Tencent HY-MT translation model size to use when --translate is set.",
     )
     parser.add_argument(
         "--chapters",
@@ -280,45 +257,6 @@ def resolve_clip_range(raw_range: list[str] | None) -> tuple[int, int] | None:
     if end_ms <= start_ms:
         raise SubmasterError("Range end must be greater than range start.")
     return start_ms, end_ms
-
-
-def resolve_vad_model_path(
-    raw_value: str | None,
-    models_dir: Path,
-    console: Console,
-) -> Path | None:
-    """Resolve a VAD model argument into a local file path.
-
-    :param raw_value: Raw CLI value for `--vad-model`, if provided.
-    :type raw_value: str | None
-    :param models_dir: Directory used for named model downloads.
-    :type models_dir: pathlib.Path
-    :param console: Console used for download status output.
-    :type console: Console
-    :returns: Resolved local VAD model path, or `None` when VAD is disabled.
-    :rtype: pathlib.Path | None
-    :raises SubmasterError: If the path is missing or the model name is unknown.
-    """
-    if raw_value is None:
-        return None
-
-    candidate = Path(raw_value).expanduser()
-    if candidate.exists():
-        if not candidate.is_file():
-            raise SubmasterError(f"VAD model path is not a file: {candidate.resolve()}")
-        if candidate.stat().st_size <= 0:
-            raise SubmasterError(f"VAD model file is empty: {candidate.resolve()}")
-        return candidate.resolve()
-
-    try:
-        spec = resolve_vad_model_spec(raw_value)
-    except SubmasterError as exc:
-        path_like = candidate.suffix or any(sep in raw_value for sep in (os.sep, os.altsep, "/", "\\") if sep)
-        if path_like:
-            raise SubmasterError(f"VAD model file does not exist: {candidate.resolve()}") from exc
-        raise
-
-    return ensure_vad_model_available(spec.name, models_dir, console)
 
 
 def resolve_output_path(source_path: Path, requested_output: str | None) -> Path:
@@ -503,21 +441,18 @@ def build_batch_jobs(
 def build_processing_summary(
     args: argparse.Namespace,
     clip_range: tuple[int, int] | None,
-    vad_model_path: Path | None,
 ) -> str:
     """Render a one-line summary for the current transcription job."""
-    summary = f"Whisper: {args.model} | Language: {args.language} | Device: {args.device}"
+    summary = f"Whisper: {args.wmodel} | Language: {args.language} | Device: {args.device}"
     if clip_range is not None:
         summary += f" | Range: {args.range[0]} -> {args.range[1]}"
     if args.max_context != DEFAULT_WHISPER_MAX_CONTEXT:
         summary += f" | Max context: {args.max_context}"
-    if vad_model_path is not None:
-        summary += " | VAD: on"
     if args.transcribe:
         transcript_mode = "raw + cleanup" if args.cleanup else "raw"
         summary += f" | Transcribe: {transcript_mode}"
-    if args.translate_to:
-        summary += f" | Translate to: {args.translate_to} ({args.translation_model})"
+    if args.translate:
+        summary += f" | Translate to: {args.translate} ({args.tmodel})"
     return summary
 
 
@@ -541,24 +476,17 @@ def prepare_processing_resources(
     console: Console,
 ) -> ProcessingResources:
     """Resolve models and native runners that can be reused across jobs."""
-    vad_model_path = resolve_vad_model_path(args.vad_model, models_dir, console)
-    whisper_runner = WhisperCppRunner(
-        console=console,
-        cli_path=Path(args.whisper_cli).expanduser() if args.whisper_cli else None,
-    )
-    whisper_model_path = ensure_model_available(args.model, models_dir, console)
+    whisper_runner = WhisperCppRunner(console=console)
+    whisper_model_path = ensure_model_available(args.wmodel, models_dir, console)
 
     llama_runner: LlamaCppRunner | None = None
-    if args.translate_to or (args.transcribe and args.cleanup):
-        llama_runner = LlamaCppRunner(
-            console=console,
-            cli_path=Path(args.llama_cli).expanduser() if args.llama_cli else None,
-        )
+    if args.translate or (args.transcribe and args.cleanup):
+        llama_runner = LlamaCppRunner(console=console)
 
     translator: SubtitleTranslator | None = None
-    if args.translate_to:
+    if args.translate:
         translation_model_path = ensure_translation_model_available(
-            args.translation_model,
+            args.tmodel,
             models_dir,
             console,
         )
@@ -566,7 +494,7 @@ def prepare_processing_resources(
             console=console,
             runner=llama_runner,
             model_path=translation_model_path,
-            target_language=args.translate_to,
+            target_language=args.translate,
             source_language=args.language,
             requested_device=args.device,
             threads=args.threads,
@@ -592,7 +520,6 @@ def prepare_processing_resources(
         whisper_model_path=whisper_model_path,
         translator=translator,
         transcript_cleaner=transcript_cleaner,
-        vad_model_path=vad_model_path,
     )
 
 
@@ -645,7 +572,7 @@ def process_media_file(
 
         if not skip_video_validation and not has_video_stream(input_path):
             raise SubmasterError("Input must contain a video stream.")
-        console.info(build_processing_summary(args, clip_range, resources.vad_model_path))
+        console.info(build_processing_summary(args, clip_range))
 
         work_dir = create_work_dir()
         # Keep intermediate filenames simple so native runtimes never have to
@@ -675,9 +602,7 @@ def process_media_file(
             requested_device=args.device,
             threads=args.threads,
             max_context=args.max_context,
-            vad_model_path=resources.vad_model_path,
             show_timings=args.show_timings,
-            show_model_info=args.show_model_info,
         )
 
         raw_srt = raw_srt_path.read_text(encoding="utf-8")

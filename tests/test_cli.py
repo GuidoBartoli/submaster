@@ -13,7 +13,6 @@ from submaster.cli import (
     resolve_clip_range,
     resolve_input_path,
     resolve_output_path,
-    resolve_vad_model_path,
 )
 from submaster.errors import SubmasterError
 
@@ -21,19 +20,12 @@ from submaster.errors import SubmasterError
 class CliTests(unittest.TestCase):
     """Exercise CLI parsing and high-level workflow orchestration."""
 
-    def test_parser_accepts_optional_whisper_summary_flags(self) -> None:
-        """Verify that whisper summary flags parse as simple booleans."""
+    def test_parser_accepts_show_timings_flag(self) -> None:
+        """Verify that the whisper timing summary flag parses as a boolean."""
         parser = build_parser()
-        args = parser.parse_args(
-            [
-                "input.mp4",
-                "--show-timings",
-                "--show-model-info",
-            ]
-        )
+        args = parser.parse_args(["input.mp4", "--show-timings"])
 
         self.assertTrue(args.show_timings)
-        self.assertTrue(args.show_model_info)
 
     def test_parser_accepts_translation_flags(self) -> None:
         """Verify that translation-related CLI options are accepted together."""
@@ -41,21 +33,18 @@ class CliTests(unittest.TestCase):
         args = parser.parse_args(
             [
                 "input.mp4",
-                "--translate-to",
+                "--translate",
                 "it",
-                "--translation-model",
+                "--tmodel",
                 "large",
-                "--llama-cli",
-                "./llama.cpp/build/bin/llama-cli",
             ]
         )
 
-        self.assertEqual(args.translate_to, "it")
-        self.assertEqual(args.translation_model, "large")
-        self.assertEqual(args.llama_cli, "./llama.cpp/build/bin/llama-cli")
+        self.assertEqual(args.translate, "it")
+        self.assertEqual(args.tmodel, "large")
 
-    def test_parser_accepts_range_context_and_vad_flags(self) -> None:
-        """Verify that clip-limited whisper options are parsed together."""
+    def test_parser_accepts_range_and_context_flags(self) -> None:
+        """Verify that clip range and max-context options are parsed together."""
         parser = build_parser()
         args = parser.parse_args(
             [
@@ -65,14 +54,11 @@ class CliTests(unittest.TestCase):
                 "00:11:30.500",
                 "--max-context",
                 "0",
-                "--vad-model",
-                "silero-v6.2.0",
             ]
         )
 
         self.assertEqual(args.range, ["00:10:00", "00:11:30.500"])
         self.assertEqual(args.max_context, 0)
-        self.assertEqual(args.vad_model, "silero-v6.2.0")
 
     def test_parser_accepts_transcribe_flag(self) -> None:
         """Verify that plain-text transcription output can be enabled from the CLI."""
@@ -122,20 +108,6 @@ class CliTests(unittest.TestCase):
         """Verify that clip range bounds must advance forward."""
         with self.assertRaisesRegex(SubmasterError, "greater than"):
             resolve_clip_range(["00:01:00", "00:01:00"])
-
-    def test_resolve_vad_model_path_accepts_existing_file(self) -> None:
-        """Verify that explicit VAD file paths bypass named-model downloads."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            model_path = Path(tmpdir) / "ggml-vad.bin"
-            model_path.write_bytes(b"vad")
-
-            resolved = resolve_vad_model_path(
-                str(model_path),
-                Path(tmpdir) / "models",
-                SimpleNamespace(),
-            )
-
-        self.assertEqual(resolved, model_path.resolve())
 
     def test_main_rejects_audio_only_input(self) -> None:
         """Verify that the CLI rejects media files without a video stream."""
@@ -307,7 +279,7 @@ class CliTests(unittest.TestCase):
                                                         str(input_path),
                                                         "--output",
                                                         str(output_path),
-                                                        "--translate-to",
+                                                        "--translate",
                                                         "it",
                                                         "--overwrite",
                                                     ]
@@ -331,8 +303,6 @@ class CliTests(unittest.TestCase):
             raw_srt_path = Path(tmpdir) / "generated.srt"
             output_path = Path(tmpdir) / "output.srt"
             work_dir = Path(tmpdir) / "work"
-            models_dir = Path(tmpdir) / "models"
-            vad_model_path = models_dir / "ggml-silero-v6.2.0.bin"
             work_dir.mkdir()
             input_path.write_bytes(b"fake")
             raw_srt_path.write_text(
@@ -345,34 +315,24 @@ class CliTests(unittest.TestCase):
                     with patch("submaster.cli.create_work_dir", return_value=work_dir):
                         with patch("submaster.cli.extract_audio", return_value=work_dir / "audio.wav") as extract_audio_mock:
                             with patch("submaster.cli.ensure_model_available", return_value=Path(tmpdir) / "whisper.bin"):
-                                with patch("submaster.cli.ensure_vad_model_available", return_value=vad_model_path) as ensure_vad_model_mock:
-                                    with patch("submaster.cli.WhisperCppRunner") as whisper_runner_cls:
-                                        whisper_runner = whisper_runner_cls.return_value
-                                        whisper_runner.run.return_value = raw_srt_path
-                                        exit_code = main(
-                                            [
-                                                str(input_path),
-                                                "--output",
-                                                str(output_path),
-                                                "--overwrite",
-                                                "--range",
-                                                "00:10:00",
-                                                "00:10:05",
-                                                "--max-context",
-                                                "0",
-                                                "--models-dir",
-                                                str(models_dir),
-                                                "--vad-model",
-                                                "silero-v6.2.0",
-                                            ]
-                                        )
+                                with patch("submaster.cli.WhisperCppRunner") as whisper_runner_cls:
+                                    whisper_runner = whisper_runner_cls.return_value
+                                    whisper_runner.run.return_value = raw_srt_path
+                                    exit_code = main(
+                                        [
+                                            str(input_path),
+                                            "--output",
+                                            str(output_path),
+                                            "--overwrite",
+                                            "--range",
+                                            "00:10:00",
+                                            "00:10:05",
+                                            "--max-context",
+                                            "0",
+                                        ]
+                                    )
 
             self.assertEqual(exit_code, 0)
-            ensure_vad_model_mock.assert_called_once_with(
-                "silero-v6.2.0",
-                models_dir.resolve(),
-                unittest.mock.ANY,
-            )
             extract_audio_mock.assert_called_once_with(
                 input_path.resolve(),
                 work_dir / "input.wav",
@@ -388,9 +348,7 @@ class CliTests(unittest.TestCase):
                 requested_device="auto",
                 threads=unittest.mock.ANY,
                 max_context=0,
-                vad_model_path=vad_model_path.resolve(),
                 show_timings=False,
-                show_model_info=False,
             )
             self.assertEqual(
                 output_path.read_text(encoding="utf-8"),
