@@ -70,10 +70,11 @@ Common options:
 ```bash
 python setup_runtimes.py --backend cpu      # force a CPU-only build
 python setup_runtimes.py --backend cuda     # force CUDA regardless of detection
-python setup_runtimes.py --skip-llama       # whisper.cpp only
 python setup_runtimes.py --no-update        # offline: skip git pull
 python setup_runtimes.py --no-rebuild       # skip build, re-verify executables only
 ```
+
+On Windows, Ninja must be installed (via `winget install Ninja-build.Ninja`, Chocolatey, or Scoop) so cmake can run from any terminal. Without Ninja, cmake falls back to NMake Makefiles, which requires a Visual Studio Developer Command Prompt.
 
 ## Installation
 
@@ -104,7 +105,9 @@ llama-cli -h
 submaster --help
 ```
 
-## Translation Backend
+## Translation and Transcription
+
+### Translation Backend
 
 Subtitle translation uses **Tencent HY-MT 1.5 GGUF** models through `llama.cpp`.
 
@@ -117,7 +120,7 @@ The project intentionally downloads the `Q4_K_M` variants instead of full-precis
 
 The models are downloaded automatically into `models/` the first time translation is requested.
 
-## Transcript Cleanup Backend
+### Transcript Cleanup Backend
 
 Plain-text transcription cleanup uses **Qwen3.5-9B Q4_K_M GGUF** through `llama.cpp`.
 
@@ -134,28 +137,26 @@ The cleanup model is downloaded automatically into `models/` the first time tran
 
 Lookup order:
 
-- `--whisper-cli`
-- `WHISPER_CPP_CLI`
+- `WHISPER_CPP_CLI` environment variable
 - Conda, `PATH`, and common local build outputs
 - bundled repo fallback on Linux `x86_64` only
 
-Common local build outputs include:
+Common local build outputs (produced by `setup_runtimes.py`):
 
-- Linux and macOS: `./whisper.cpp/build/bin/whisper-cli`, `./build/bin/whisper-cli`
-- Windows: `.\whisper.cpp\build\bin\Release\whisper-cli.exe`, `.\build\bin\Release\whisper-cli.exe`, plus non-`Release` `.exe` variants
+- Linux and macOS: `./whisper.cpp/build/bin/whisper-cli`
+- Windows: `.\whisper.cpp\build\bin\Release\whisper-cli.exe`
 
 ### `llama.cpp`
 
 Lookup order:
 
-- `--llama-cli`
-- `LLAMA_CPP_CLI`
+- `LLAMA_CPP_CLI` environment variable
 - Conda, `PATH`, and common local build outputs
 
-Common local build outputs include:
+Common local build outputs (produced by `setup_runtimes.py`):
 
-- Linux and macOS: `./llama.cpp/build/bin/llama-cli`, `./build/bin/llama-cli`
-- Windows: `.\llama.cpp\build\bin\Release\llama-cli.exe`, `.\build\bin\Release\llama-cli.exe`, plus non-`Release` `.exe` variants
+- Linux and macOS: `./llama.cpp/build/bin/llama-cli`
+- Windows: `.\llama.cpp\build\bin\Release\llama-cli.exe`
 
 ## Usage
 
@@ -174,7 +175,7 @@ submaster ./videos --batch
 Translate the generated subtitles into Italian:
 
 ```bash
-submaster input.mp4 --translate-to it
+submaster input.mp4 --translate it
 ```
 
 Generate a plain-text transcription and clean it locally:
@@ -183,31 +184,9 @@ Generate a plain-text transcription and clean it locally:
 submaster input.mp4 --transcribe --cleanup
 ```
 
-Common patterns:
+On Windows, `--output .\subs\` works as expected.
 
-```bash
-submaster input.mp4 --model turbo --device gpu
-submaster input.mp4 --language en --model small
-submaster input.mp4 --range 00:10:00 00:12:30
-submaster input.mp4 --range 600 750 --translate-to it
-submaster input.mp4 --vad-model silero-v6.2.0
-submaster input.mp4 --vad-model ./models/ggml-silero-v6.2.0.bin
-submaster input.mp4 --max-context -1
-submaster input.mp4 --translate-to it --translation-model large
-submaster input.mp4 --translate-to ja --device gpu --llama-cli ./llama.cpp/build/bin/llama-cli
-submaster input.mp4 --transcribe --cleanup
-submaster input.mkv --output ./subs/
-submaster ./videos --batch --output ./subs/
-submaster input.mov --keep-audio
-submaster input.mp4 --whisper-cli ./whisper.cpp/build/bin/whisper-cli
-submaster input.mp4 --show-timings
-submaster input.mp4 --show-model-info
-submaster input.mp4 --chapters chapters.txt
-```
-
-On Windows, `--output .\subs\`, `--whisper-cli .\whisper.cpp\build\bin\Release\whisper-cli.exe`, and `--llama-cli .\llama.cpp\build\bin\Release\llama-cli.exe` work as expected.
-
-If `--translate-to` is set, the written `.srt` file keeps the original-language subtitles and an additional `<output-stem>_<language_code>.srt` file is written with the translated subtitles.
+If `--translate` is set, the written `.srt` file keeps the original-language subtitles and an additional `<output-stem>_<language_code>.srt` file is written with the translated subtitles.
 
 `--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
 
@@ -230,8 +209,6 @@ Example chapter file:
 `--batch` treats the positional input as a folder and probes each direct child file with `ffprobe`. Files that do not expose a video stream are skipped. Batch outputs default to `<source-stem>.srt` next to each source file, or into a shared directory when `--output DIR` is provided.
 
 `--max-context` controls how much previously decoded text `whisper.cpp` feeds back into later decode windows. Submaster defaults this to `0` to reduce repetition loops on long recordings. Pass `--max-context -1` to restore the upstream `whisper.cpp` behavior.
-
-`--vad-model VALUE` enables `whisper.cpp` voice activity detection. `VALUE` can be either a local file path or one of the built-in names `silero-v5.1.2` and `silero-v6.2.0`. Named VAD models are downloaded automatically into `models/` from the official `ggml-org/whisper-vad` repository on Hugging Face.
 
 ## Validation
 

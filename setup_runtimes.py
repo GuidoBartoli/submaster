@@ -32,16 +32,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="GPU backend to build with. 'auto' probes the current hardware.",
     )
     parser.add_argument(
-        "--skip-whisper",
-        action="store_true",
-        help="Skip cloning and building whisper.cpp.",
-    )
-    parser.add_argument(
-        "--skip-llama",
-        action="store_true",
-        help="Skip cloning and building llama.cpp.",
-    )
-    parser.add_argument(
         "--no-update",
         action="store_true",
         help="Skip 'git pull' when the repository is already cloned.",
@@ -359,41 +349,35 @@ def main(argv: list[str] | None = None) -> int:
 
     errors = 0
 
-    if not args.skip_whisper:
-        print("\n> Setting up whisper.cpp")
-        try:
-            setup_project(
-                "whisper.cpp",
-                _WHISPER_URL,
-                root,
-                backend,
-                generator,
-                no_update=args.no_update,
-                no_rebuild=args.no_rebuild,
-            )
-        except SystemExit as exc:
-            print(exc)
-            errors += 1
-    else:
-        print("\n- Skipping whisper.cpp (--skip-whisper).")
+    print("\n> Setting up whisper.cpp")
+    try:
+        setup_project(
+            "whisper.cpp",
+            _WHISPER_URL,
+            root,
+            backend,
+            generator,
+            no_update=args.no_update,
+            no_rebuild=args.no_rebuild,
+        )
+    except SystemExit as exc:
+        print(exc)
+        errors += 1
 
-    if not args.skip_llama:
-        print("\n> Setting up llama.cpp")
-        try:
-            setup_project(
-                "llama.cpp",
-                _LLAMA_URL,
-                root,
-                backend,
-                generator,
-                no_update=args.no_update,
-                no_rebuild=args.no_rebuild,
-            )
-        except SystemExit as exc:
-            print(exc)
-            errors += 1
-    else:
-        print("\n- Skipping llama.cpp (--skip-llama).")
+    print("\n> Setting up llama.cpp")
+    try:
+        setup_project(
+            "llama.cpp",
+            _LLAMA_URL,
+            root,
+            backend,
+            generator,
+            no_update=args.no_update,
+            no_rebuild=args.no_rebuild,
+        )
+    except SystemExit as exc:
+        print(exc)
+        errors += 1
 
     print()
     if errors == 0:

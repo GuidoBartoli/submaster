@@ -56,8 +56,9 @@ class WhisperCppRunnerTests(unittest.TestCase):
             runner = WhisperCppRunner.__new__(WhisperCppRunner)
             with patch.dict(os.environ, {}, clear=True):
                 with patch("submaster.whisper_cpp.shutil.which", return_value=None):
-                    with patch.object(WhisperCppRunner, "_project_root", return_value=root / "repo"):
-                        resolved = runner._resolve_cli_path(None)
+                    with patch("submaster.whisper_cpp.Path.cwd", return_value=root / "empty"):
+                        with patch.object(WhisperCppRunner, "_project_root", return_value=root / "repo"):
+                            resolved = runner._resolve_cli_path(None)
 
             self.assertEqual(resolved, bundled_cli.resolve())
 

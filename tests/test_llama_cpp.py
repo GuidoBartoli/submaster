@@ -68,9 +68,10 @@ class LlamaCppRunnerTests(unittest.TestCase):
         runner = LlamaCppRunner.__new__(LlamaCppRunner)
         with patch.dict(os.environ, {}, clear=True):
             with patch("submaster.llama_cpp.shutil.which", return_value=None):
-                with patch.object(LlamaCppRunner, "_project_root", return_value=Path("/tmp/repo")):
-                    with self.assertRaises(SubmasterError):
-                        runner._resolve_cli_path(None)
+                with patch("submaster.llama_cpp.Path.cwd", return_value=Path("/tmp/empty_repo")):
+                    with patch.object(LlamaCppRunner, "_project_root", return_value=Path("/tmp/repo")):
+                        with self.assertRaises(SubmasterError):
+                            runner._resolve_cli_path(None)
 
     def test_resolve_prefers_completion_sibling_for_explicit_llama_cli(self) -> None:
         """Verify that prompt translation upgrades explicit llama-cli paths when possible."""
