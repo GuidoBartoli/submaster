@@ -105,6 +105,58 @@ llama-cli -h
 submaster --help
 ```
 
+## Usage
+
+Basic transcription:
+
+```bash
+submaster input.mp4
+```
+
+Batch-process all video files in a folder:
+
+```bash
+submaster ./videos --batch
+```
+
+Translate the generated subtitles into Italian:
+
+```bash
+submaster input.mp4 --translate it
+```
+
+Generate a plain-text transcription and clean it locally:
+
+```bash
+submaster input.mp4 --transcribe --cleanup
+```
+
+On Windows, `--output .\subs\` works as expected.
+
+If `--translate` is set, the written `.srt` file keeps the original-language subtitles and an additional `<output-stem>_<language_code>.srt` file is written with the translated subtitles.
+
+`--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
+
+`--chapters FILE` reads chapter timestamps from a plain-text file and produces a chapter-embedded copy of the input video named `<input-stem>_chapters.<ext>` next to the original. Each non-empty line must follow the format `HH:MM:SS Title`. Cannot be combined with `--batch`.
+
+Example chapter file:
+
+```text
+00:00:00 Introduction
+00:23:20 Start
+00:40:30 First Performance
+00:40:56 Break
+01:04:44 Second Performance
+01:24:45 Crowd Shots
+01:27:45 Credits
+```
+
+`--range START END` limits extraction, transcription, and optional translation to the selected source clip while keeping subtitle timestamps aligned to the original video timeline. Accepted formats are `SS`, `MM:SS`, or `HH:MM:SS` with optional `.mmm` or `,mmm` milliseconds.
+
+`--batch` treats the positional input as a folder and probes each direct child file with `ffprobe`. Files that do not expose a video stream are skipped. Batch outputs default to `<source-stem>.srt` next to each source file, or into a shared directory when `--output DIR` is provided.
+
+`--max-context` controls how much previously decoded text `whisper.cpp` feeds back into later decode windows. Submaster defaults this to `0` to reduce repetition loops on long recordings. Pass `--max-context -1` to restore the upstream `whisper.cpp` behavior.
+
 ## Translation and Transcription
 
 ### Translation Backend
@@ -157,58 +209,6 @@ Common local build outputs (produced by `setup_runtimes.py`):
 
 - Linux and macOS: `./llama.cpp/build/bin/llama-cli`
 - Windows: `.\llama.cpp\build\bin\Release\llama-cli.exe`
-
-## Usage
-
-Basic transcription:
-
-```bash
-submaster input.mp4
-```
-
-Batch-process all video files in a folder:
-
-```bash
-submaster ./videos --batch
-```
-
-Translate the generated subtitles into Italian:
-
-```bash
-submaster input.mp4 --translate it
-```
-
-Generate a plain-text transcription and clean it locally:
-
-```bash
-submaster input.mp4 --transcribe --cleanup
-```
-
-On Windows, `--output .\subs\` works as expected.
-
-If `--translate` is set, the written `.srt` file keeps the original-language subtitles and an additional `<output-stem>_<language_code>.srt` file is written with the translated subtitles.
-
-`--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
-
-`--chapters FILE` reads chapter timestamps from a plain-text file and produces a chapter-embedded copy of the input video named `<input-stem>_chapters.<ext>` next to the original. Each non-empty line must follow the format `HH:MM:SS Title`. Cannot be combined with `--batch`.
-
-Example chapter file:
-
-```text
-00:00:00 Introduction
-00:23:20 Start
-00:40:30 First Performance
-00:40:56 Break
-01:04:44 Second Performance
-01:24:45 Crowd Shots
-01:27:45 Credits
-```
-
-`--range START END` limits extraction, transcription, and optional translation to the selected source clip while keeping subtitle timestamps aligned to the original video timeline. Accepted formats are `SS`, `MM:SS`, or `HH:MM:SS` with optional `.mmm` or `,mmm` milliseconds.
-
-`--batch` treats the positional input as a folder and probes each direct child file with `ffprobe`. Files that do not expose a video stream are skipped. Batch outputs default to `<source-stem>.srt` next to each source file, or into a shared directory when `--output DIR` is provided.
-
-`--max-context` controls how much previously decoded text `whisper.cpp` feeds back into later decode windows. Submaster defaults this to `0` to reduce repetition loops on long recordings. Pass `--max-context -1` to restore the upstream `whisper.cpp` behavior.
 
 ## Validation
 
