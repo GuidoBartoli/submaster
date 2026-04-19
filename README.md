@@ -37,12 +37,43 @@ The bundled fallback is only for `whisper.cpp` on Linux `x86_64`. Translation an
 ## Requirements
 
 - Python 3.10+
-- `ffmpeg`
-- `ffprobe`
-- a working `whisper.cpp` executable (`whisper-cli` recommended)
-- a working `llama.cpp` executable (`llama-cli` recommended) if subtitle translation or transcript cleanup is enabled
+- `ffmpeg` and `ffprobe`
+- `whisper-cli` and `llama-cli` executables — provided by `setup_runtimes.py` (see Quick Setup below)
 
 `submaster` has no third-party Python runtime dependencies. The package metadata in [`pyproject.toml`](pyproject.toml) allows Python `>=3.10`. Python 3.12 is the default tested setup in this repository.
+
+## Quick Setup
+
+Run the included setup script from the project root to clone, build, and install both native runtimes automatically:
+
+```bash
+python setup_runtimes.py
+```
+
+The script:
+
+1. Detects your GPU (CUDA, Vulkan, Metal, or CPU fallback)
+2. Checks for required build tools (`git`, `cmake`, C/C++ compiler, `ninja`) and prints per-platform install hints for anything missing
+3. Clones `whisper.cpp` and `llama.cpp` into the project root and builds them with the correct flags
+4. Verifies the resulting executables — `submaster` picks them up automatically from those locations
+
+Install build prerequisites first:
+
+- Ubuntu or Debian: `sudo apt install git cmake ninja-build build-essential`
+- macOS with Homebrew: `brew install git cmake ninja`
+- Windows: install [Git](https://git-scm.com/), [CMake](https://cmake.org/), and [Ninja](https://ninja-build.org/) via `winget`, Chocolatey, or Scoop
+
+For CUDA builds, the [NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) is also required. For Vulkan builds, install the [LunarG Vulkan SDK](https://vulkan.lunarg.com/) (Windows) or `libvulkan-dev` (Linux).
+
+Common options:
+
+```bash
+python setup_runtimes.py --backend cpu      # force a CPU-only build
+python setup_runtimes.py --backend cuda     # force CUDA regardless of detection
+python setup_runtimes.py --skip-llama       # whisper.cpp only
+python setup_runtimes.py --no-update        # offline: skip git pull
+python setup_runtimes.py --no-rebuild       # skip build, re-verify executables only
+```
 
 ## Installation
 
@@ -125,89 +156,6 @@ Common local build outputs include:
 
 - Linux and macOS: `./llama.cpp/build/bin/llama-cli`, `./build/bin/llama-cli`
 - Windows: `.\llama.cpp\build\bin\Release\llama-cli.exe`, `.\build\bin\Release\llama-cli.exe`, plus non-`Release` `.exe` variants
-
-## Building `whisper.cpp` from source
-
-### CPU builds
-
-```bash
-git clone https://github.com/ggml-org/whisper.cpp.git
-cmake -S whisper.cpp -B whisper.cpp/build -G Ninja
-cmake --build whisper.cpp/build -j --config Release
-```
-
-Typical outputs are `./whisper.cpp/build/bin/whisper-cli` on Linux/macOS and `.\whisper.cpp\build\bin\Release\whisper-cli.exe` on Windows. Add that directory to `PATH` or pass it explicitly:
-
-```bash
-submaster input.mp4 --whisper-cli ./whisper.cpp/build/bin/whisper-cli
-```
-
-Windows PowerShell equivalent:
-
-```powershell
-submaster input.mp4 --whisper-cli .\whisper.cpp\build\bin\Release\whisper-cli.exe
-```
-
-### GPU builds (CUDA example)
-
-```bash
-git clone https://github.com/ggml-org/whisper.cpp.git
-cmake -S whisper.cpp -B whisper.cpp/build -G Ninja -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=OFF
-cmake --build whisper.cpp/build -j --config Release
-```
-
-Before building, confirm that `nvcc` is available:
-
-```bash
-nvcc --version
-```
-
-## Building `llama.cpp` from source
-
-### CPU builds
-
-```bash
-git clone https://github.com/ggml-org/llama.cpp.git
-cmake -S llama.cpp -B llama.cpp/build -G Ninja
-cmake --build llama.cpp/build -j --config Release
-```
-
-Typical outputs are `./llama.cpp/build/bin/llama-cli` on Linux/macOS and `.\llama.cpp\build\bin\Release\llama-cli.exe` on Windows. Add that directory to `PATH` or pass it explicitly:
-
-```bash
-submaster input.mp4 --translate-to it --llama-cli ./llama.cpp/build/bin/llama-cli
-```
-
-Windows PowerShell equivalent:
-
-```powershell
-submaster input.mp4 --translate-to it --llama-cli .\llama.cpp\build\bin\Release\llama-cli.exe
-```
-
-Install `ffmpeg`, `git`, `cmake`, and `ninja` first:
-
-- Ubuntu or Debian: `sudo apt install ffmpeg git cmake ninja-build build-essential`
-- macOS with Homebrew: `brew install ffmpeg git cmake ninja`
-- Windows: install the same tools with `winget`, Chocolatey, Scoop, or another local package manager, then build `whisper.cpp` and `llama.cpp` as shown above
-
-### GPU builds
-
-#### CUDA 
-
-```bash
-git clone https://github.com/ggml-org/llama.cpp.git
-cmake -S llama.cpp -B llama.cpp/build -G Ninja -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=OFF
-cmake --build llama.cpp/build -j --config Release
-```
-
-#### Vulkan
-
-```bash
-cmake -S llama.cpp -B llama.cpp/build -G Ninja -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=OFF
-cmake --build llama.cpp/build -j --config Release
-```
-
-On macOS, `whisper.cpp` and `llama.cpp` typically use Metal when the selected build includes it. On Windows, `submaster` auto-detects common local `.exe` build outputs and nearby GPU backend DLLs. If you keep multiple builds around, pass `--whisper-cli` and `--llama-cli` explicitly.
 
 ## Usage
 
