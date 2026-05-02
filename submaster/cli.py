@@ -14,9 +14,11 @@ from .config import (
     DEFAULT_MODEL,
     DEFAULT_THREADS,
     DEFAULT_TRANSLATION_MODEL,
+    DEFAULT_VAD_MODEL,
     DEFAULT_WHISPER_MAX_CONTEXT,
     MODEL_SPECS,
     TRANSLATION_MODEL_SPECS,
+    VAD_MODEL_SPECS,
 )
 from .console import Console
 from .errors import SubmasterError
@@ -26,6 +28,7 @@ from .models import (
     ensure_cleanup_model_available,
     ensure_model_available,
     ensure_translation_model_available,
+    ensure_vad_model_available,
 )
 from .srt import normalize_srt, render_transcript_from_srt
 from .transcript_cleanup import TranscriptCleaner
@@ -43,6 +46,7 @@ class ProcessingResources:
 
     whisper_runner: WhisperCppRunner
     whisper_model_path: Path
+    vad_model_path: Path | None
     translator: SubtitleTranslator | None
     transcript_cleaner: TranscriptCleaner | None
 
@@ -121,6 +125,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--vad-model",
+        choices=tuple(VAD_MODEL_SPECS),
+        help=(
+            "Enable whisper.cpp VAD with the selected model. "
+            f"Use '{DEFAULT_VAD_MODEL}' for the current default VAD model."
+        ),
+    )
+    parser.add_argument(
         "--range",
         nargs=2,
         metavar=("START", "END"),
@@ -162,6 +174,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-timings",
         action="store_true",
         help="Display the final whisper.cpp timing summary.",
+    )
+    parser.add_argument(
+        "--show-model-info",
+        action="store_true",
+        help="Display whisper.cpp model-load metadata after transcription.",
     )
 
     # Translation options stay optional and are only used when the caller
@@ -448,6 +465,8 @@ def build_processing_summary(
         summary += f" | Range: {args.range[0]} -> {args.range[1]}"
     if args.max_context != DEFAULT_WHISPER_MAX_CONTEXT:
         summary += f" | Max context: {args.max_context}"
+    if args.vad_model:
+        summary += f" | VAD: {args.vad_model}"
     if args.transcribe:
         transcript_mode = "raw + cleanup" if args.cleanup else "raw"
         summary += f" | Transcribe: {transcript_mode}"
@@ -478,6 +497,11 @@ def prepare_processing_resources(
     """Resolve models and native runners that can be reused across jobs."""
     whisper_runner = WhisperCppRunner(console=console)
     whisper_model_path = ensure_model_available(args.wmodel, models_dir, console)
+    vad_model_path = (
+        ensure_vad_model_available(args.vad_model, models_dir, console)
+        if args.vad_model
+        else None
+    )
 
     llama_runner: LlamaCppRunner | None = None
     if args.translate or (args.transcribe and args.cleanup):
@@ -518,6 +542,7 @@ def prepare_processing_resources(
     return ProcessingResources(
         whisper_runner=whisper_runner,
         whisper_model_path=whisper_model_path,
+        vad_model_path=vad_model_path,
         translator=translator,
         transcript_cleaner=transcript_cleaner,
     )
@@ -602,7 +627,9 @@ def process_media_file(
             requested_device=args.device,
             threads=args.threads,
             max_context=args.max_context,
+            vad_model_path=resources.vad_model_path,
             show_timings=args.show_timings,
+            show_model_info=args.show_model_info,
         )
 
         raw_srt = raw_srt_path.read_text(encoding="utf-8")

@@ -27,6 +27,21 @@ class CliTests(unittest.TestCase):
 
         self.assertTrue(args.show_timings)
 
+    def test_parser_accepts_whisper_diagnostics_and_vad_flags(self) -> None:
+        """Verify that optional whisper.cpp diagnostics and VAD settings parse."""
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "input.mp4",
+                "--show-model-info",
+                "--vad-model",
+                "silero-v6.2.0",
+            ]
+        )
+
+        self.assertTrue(args.show_model_info)
+        self.assertEqual(args.vad_model, "silero-v6.2.0")
+
     def test_parser_accepts_translation_flags(self) -> None:
         """Verify that translation-related CLI options are accepted together."""
         parser = build_parser()
@@ -348,7 +363,9 @@ class CliTests(unittest.TestCase):
                 requested_device="auto",
                 threads=unittest.mock.ANY,
                 max_context=0,
+                vad_model_path=None,
                 show_timings=False,
+                show_model_info=False,
             )
             self.assertEqual(
                 output_path.read_text(encoding="utf-8"),
