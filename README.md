@@ -47,10 +47,11 @@ The bundled fallback is only for `whisper.cpp` on Linux `x86_64`. Translation an
 Run the included setup script from the project root to clone, build, and install both native runtimes automatically:
 
 ```bash
+python -m pip install -e .
 python setup_runtimes.py
 ```
 
-The script:
+The editable install provides the `submaster` command for your current Python environment. The runtime setup script:
 
 1. Detects your GPU (CUDA, Vulkan, Metal, or CPU fallback)
 2. Checks for required build tools (`git`, `cmake`, C/C++ compiler, `ninja`) and prints per-platform install hints for anything missing
