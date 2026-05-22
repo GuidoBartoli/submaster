@@ -10,3 +10,5 @@ models/*.bin
 models/*.part
 models/*.gguf
 /.vscode
+/llama.cpp/
+/whisper.cpp/
