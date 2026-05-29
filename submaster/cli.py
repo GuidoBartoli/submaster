@@ -73,20 +73,15 @@ def build_parser() -> argparse.ArgumentParser:
     # subtitle location.
     parser.add_argument(
         "input",
-        help="Path to a video file, or a folder when --batch is set.",
+        help="Path to a video file, or a folder to batch-process direct child video files.",
     )
     parser.add_argument(
         "-o",
         "--output",
         help=(
             "Output .srt file path or directory. Defaults to the input stem next to "
-            "the source file. In --batch mode this must be a directory."
+            "the source file. When input is a folder this must be a directory."
         ),
-    )
-    parser.add_argument(
-        "--batch",
-        action="store_true",
-        help="Treat the input path as a folder and process every contained video file.",
     )
 
     # Whisper-specific options control transcription quality, language
@@ -199,7 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Path to a plain-text chapter file (one 'HH:MM:SS Title' entry per line). "
             "When set, a chapter-embedded copy of the input video is written next to it "
-            "with a '_chapters' suffix. Cannot be used with --batch."
+            "with a '_chapters' suffix. Cannot be used with folder input."
         ),
     )
     return parser
@@ -717,19 +712,13 @@ def main(argv: list[str] | None = None) -> int:
         clip_range = resolve_clip_range(args.range)
         models_dir = Path(args.models_dir).expanduser().resolve()
 
-        if args.batch and args.chapters:
-            raise SubmasterError("--chapters cannot be used together with --batch.")
-
         input_path = resolve_input_path(args.input)
         if not input_path.exists():
             raise SubmasterError(f"Input file does not exist: {input_path}")
 
-        if args.batch:
-            if not input_path.is_dir():
-                raise SubmasterError(
-                    f"Batch mode requires a folder input, but got: {input_path}"
-                )
-
+        if input_path.is_dir():
+            if args.chapters:
+                raise SubmasterError("--chapters cannot be used with folder input.")
             output_dir = resolve_batch_output_dir(args.output)
             if output_dir is not None:
                 output_dir = output_dir.resolve()
@@ -784,11 +773,6 @@ def main(argv: list[str] | None = None) -> int:
                 f"Batch finished successfully: {len(jobs)} subtitle file(s) written."
             )
             return 0
-
-        if input_path.is_dir():
-            raise SubmasterError(
-                "Input path is a directory. Use --batch to process a folder."
-            )
 
         output_path = resolve_output_path(input_path, args.output).resolve()
         if not has_video_stream(input_path):

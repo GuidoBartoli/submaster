@@ -80,7 +80,7 @@ On Windows, Ninja must be installed (via `winget install Ninja-build.Ninja`, Cho
 ## Usage
 
 - Basic transcription: `submaster input.mp4`
-- Batch-process all video files in a folder: `submaster ./videos --batch`
+- Batch-process all video files in a folder: `submaster ./videos`
 - Translate the generated subtitles into Italian: `submaster input.mp4 --translate it`
 - Generate a plain-text transcription and clean it locally: `submaster input.mp4 --transcribe --cleanup`
 
@@ -90,7 +90,7 @@ If `--translate` is set, the written `.srt` file keeps the original-language sub
 
 `--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
 
-`--chapters FILE` reads chapter timestamps from a plain-text file and produces a chapter-embedded copy of the input video named `<input-stem>_chapters.<ext>` next to the original. Each non-empty line must follow the format `HH:MM:SS Title`. Cannot be combined with `--batch`.
+`--chapters FILE` reads chapter timestamps from a plain-text file and produces a chapter-embedded copy of the input video named `<input-stem>_chapters.<ext>` next to the original. Each non-empty line must follow the format `HH:MM:SS Title`. Cannot be combined with folder input.
 
 Example chapter file:
 
@@ -106,7 +106,7 @@ Example chapter file:
 
 `--range START END` limits extraction, transcription, and optional translation to the selected source clip while keeping subtitle timestamps aligned to the original video timeline. Accepted formats are `SS`, `MM:SS`, or `HH:MM:SS` with optional `.mmm` or `,mmm` milliseconds.
 
-`--batch` treats the positional input as a folder and probes each direct child file with `ffprobe`. Files that do not expose a video stream are skipped. Batch outputs default to `<source-stem>.srt` next to each source file, or into a shared directory when `--output DIR` is provided.
+When the positional input is a folder, SubMaster probes each direct child file with `ffprobe`. Files that do not expose a video stream are skipped. Batch outputs default to `<source-stem>.srt` next to each source file, or into a shared directory when `--output DIR` is provided.
 
 `--max-context` controls how much previously decoded text `whisper.cpp` feeds back into later decode windows. Submaster defaults this to `0` to reduce repetition loops on long recordings. Pass `--max-context -1` to restore the upstream `whisper.cpp` behavior.
 

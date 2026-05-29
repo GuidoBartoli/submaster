@@ -1,3 +1,4 @@
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -101,17 +102,13 @@ class CliTests(unittest.TestCase):
         self.assertTrue(args.transcribe)
         self.assertTrue(args.cleanup)
 
-    def test_parser_accepts_batch_flag(self) -> None:
-        """Verify that folder processing can be enabled from the CLI."""
+    def test_parser_rejects_removed_batch_flag(self) -> None:
+        """Verify that folder processing is inferred rather than flag-driven."""
         parser = build_parser()
-        args = parser.parse_args(
-            [
-                "videos",
-                "--batch",
-            ]
-        )
 
-        self.assertTrue(args.batch)
+        with patch("sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["videos", "--batch"])
 
     def test_parse_time_value_accepts_flexible_timestamp_formats(self) -> None:
         """Verify that user-facing clip timestamps normalize to milliseconds."""
@@ -179,19 +176,8 @@ class CliTests(unittest.TestCase):
         with self.assertRaisesRegex(SubmasterError, "same subtitle path"):
             build_batch_jobs(input_paths, None)
 
-    def test_main_rejects_directory_without_batch(self) -> None:
-        """Verify that directory inputs require explicit batch mode."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            input_dir = Path(tmpdir) / "videos"
-            input_dir.mkdir()
-
-            with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
-                exit_code = main([str(input_dir)])
-
-        self.assertEqual(exit_code, 1)
-
     def test_main_batch_processes_every_detected_video_file(self) -> None:
-        """Verify that batch mode processes each direct child video file once."""
+        """Verify that folder input processes each direct child video file once."""
         with tempfile.TemporaryDirectory() as tmpdir:
             input_dir = Path(tmpdir) / "videos"
             output_dir = Path(tmpdir) / "subs"
@@ -239,7 +225,6 @@ class CliTests(unittest.TestCase):
                             exit_code = main(
                                 [
                                     str(input_dir),
-                                    "--batch",
                                     "--output",
                                     str(output_dir),
                                 ]
@@ -517,16 +502,14 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(args.chapters, "chapters.txt")
 
-    def test_main_rejects_batch_combined_with_chapters(self) -> None:
-        """Verify that --batch and --chapters together produce an error."""
+    def test_main_rejects_folder_input_combined_with_chapters(self) -> None:
+        """Verify that folder input and --chapters together produce an error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             input_dir = Path(tmpdir) / "videos"
             input_dir.mkdir()
 
             with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
-                exit_code = main(
-                    [str(input_dir), "--batch", "--chapters", "chapters.txt"]
-                )
+                exit_code = main([str(input_dir), "--chapters", "chapters.txt"])
 
         self.assertEqual(exit_code, 1)
 
