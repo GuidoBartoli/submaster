@@ -51,6 +51,27 @@ class ProcessingResources:
     transcript_cleaner: TranscriptCleaner | None
 
 
+def get_project_root() -> Path:
+    """Return the SubMaster project root derived from the installed package path."""
+    return Path(__file__).resolve().parent.parent
+
+
+def ensure_launched_from_project_root() -> None:
+    """Reject CLI runs started outside the SubMaster project root."""
+    project_root = get_project_root()
+    current_dir = Path.cwd().resolve()
+    if current_dir == project_root:
+        return
+
+    raise SubmasterError(
+        "SubMaster must be launched from its project root so it can reuse the "
+        "local models cache and setup_runtimes.py builds.\n"
+        f"Current directory: {current_dir}\n"
+        f"Expected directory: {project_root}\n"
+        f"Run: cd {project_root}"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser for the `submaster` executable.
 
@@ -709,14 +730,17 @@ def main(argv: list[str] | None = None) -> int:
     :returns: Process exit status code for the CLI invocation.
     :rtype: int
     """
-    # Parse CLI options once at the top so the rest of the function works
-    # from validated arguments.
-    parser = build_parser()
-    args = parser.parse_args(argv)
     console = Console()
+
+    horizontal_rule = "-" * 80
 
     try:
         console.banner(">>> SubMaster <<<")
+        ensure_launched_from_project_root()
+        # Parse CLI options once after the launch location is validated so the
+        # executable cannot accidentally operate from an unrelated working tree.
+        parser = build_parser()
+        args = parser.parse_args(argv)
         # Verify external tools and input/output paths before doing any
         # expensive setup.
         ensure_runtime_dependencies()
@@ -748,7 +772,7 @@ def main(argv: list[str] | None = None) -> int:
             console.info(
                 f"Found {len(jobs)} video file(s) to process{skipped_suffix}."
             )
-            console.banner("----------------------------------")
+            console.banner(horizontal_rule)
 
             resources = prepare_processing_resources(args, models_dir, console)
             failures = 0
@@ -771,7 +795,7 @@ def main(argv: list[str] | None = None) -> int:
                     console.dismiss_progress()
                     console.error(f"[{index}/{len(jobs)}] {media_path.name}: {exc}")
 
-            console.banner("----------------------------------")
+            console.banner(horizontal_rule)
             if failures:
                 console.warn(
                     f"Batch finished with {len(jobs) - failures} success(es) and {failures} failure(s)."

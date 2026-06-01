@@ -382,11 +382,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
     if errors == 0:
         print("> Runtime setup complete.")
-        if shutil.which("submaster"):
-            print("> Run 'submaster --help' to get started.")
-        else:
-            print("> Install the CLI with 'python -m pip install -e .'")
-            print("> Or run 'python -m submaster --help' from this checkout.")
+        print("> From this project root, run 'python -m submaster --help' to get started.")
     else:
         print(f"! Setup finished with {errors} error(s). Check the output above.")
     return errors

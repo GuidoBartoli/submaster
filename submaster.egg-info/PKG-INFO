@@ -1,7 +1,7 @@
 Metadata-Version: 2.4
 Name: submaster
-Version: 0.3.0
-Summary: Offline subtitle generation from audio or video using whisper.cpp
+Version: 0.4.0
+Summary: Offline subtitle generation from video using whisper.cpp
 Author: Guido
 License:                                  Apache License
                                    Version 2.0, January 2004
@@ -205,11 +205,14 @@ License:                                  Apache License
            See the License for the specific language governing permissions and
            limitations under the License.
         
-Keywords: subtitles,whisper,whisper.cpp,ffmpeg,srt
+Keywords: subtitles,translation,whisper,whisper.cpp,llama.cpp,ffmpeg,srt
 Classifier: Programming Language :: Python :: 3
 Classifier: Programming Language :: Python :: 3 :: Only
 Classifier: License :: OSI Approved :: MIT License
 Classifier: Environment :: Console
+Classifier: Operating System :: MacOS
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: POSIX :: Linux
 Classifier: Topic :: Multimedia :: Video
 Classifier: Topic :: Multimedia :: Sound/Audio :: Speech
 Requires-Python: >=3.10
@@ -217,208 +220,189 @@ Description-Content-Type: text/markdown
 License-File: LICENSE
 Dynamic: license-file
 
-# submaster
+<p align="center">
+  <img src="submaster.png" width="600px" alt="Submaster" />
+  <br><b>An open source tool for video subtitle generation and translation</b>
+</p>
 
-`submaster` is a command-line Python application that turns an audio or video file into a synchronized `.srt` subtitle file.
+**SubMaster** is a command-line Python application that takes a video as input and transcribes spoken dialogues into a synchronized subtitle file with optional translation into another language.
 
-It uses:
-
-- `ffmpeg` / `ffprobe` to normalize any input into a mono 16 kHz WAV file
-- `whisper.cpp` to run local transcription with CPU or GPU when available
-- automatic GGML model downloads into `./models`
-- an SRT normalization pass so the final file is clean and VLC-friendly
+<p align="center">
+<img width="721" height="166" alt="image" src="https://github.com/user-attachments/assets/f3e6be8f-f59b-4ac2-a940-d78cd33d9040" />
+</p>
 
 ## Features
 
-- Accepts audio or video input
-- Extracts the audio track first when the input is a video
-- Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo`
-- Downloads missing models on demand
-- Prefers GPU in `--device auto` when a local GPU is detectable
-- Produces compliant `.srt` output with normalized cue numbering and timestamps
-- Shows colored terminal output, progress bars, and a transcription spinner
+- Accepts common video formats such as MP4, MKV, MOV, AVI, and RMVB
+- Batch-processes every direct child video file in a folder without relying on a fixed extension allowlist
+- Extracts and normalizes mono WAV audio using `ffmpeg` before transcription
+- Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
+- Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
+- Optionally polishes `--transcribe` output with a local **Qwen3.5-9B** cleanup pass through `llama.cpp`
+- Automatically embeds chapter markers from a same-stem plain-text sidecar into a copy of each input video
+- Downloads missing Whisper, HY-MT, and transcript-cleanup model files on demand into the local `models/` cache
+- Works on Linux, macOS, and Windows when `ffmpeg`, `whisper.cpp`, and `llama.cpp` are available
+- Prefers GPU execution in `--device auto` when the selected native runtime appears GPU-capable
+- Disables rolling Whisper text context by default to reduce long-form repetition loops
+- Produces normalized `.srt` output with clean cue numbering and timestamps
 
-## Project Layout
+## Platform Support
 
-```text
-main.py                  Simple entry point
-submaster/               CLI package
-tests/                   Small unit test suite for SRT normalization
-models/                  Auto-downloaded whisper.cpp model files
-```
+| Platform | Status | Notes |
+| --- | --- | --- |
+| Linux | Supported | Includes a bundled Linux `x86_64` `whisper-cli` CPU fallback at [`whisper/whisper-cli`](whisper/whisper-cli) |
+| macOS | Supported | Requires installed or locally built `whisper.cpp` and `llama.cpp` executables |
+| Windows | Supported | Requires installed or locally built `whisper.cpp` and `llama.cpp` executables; common `.exe` build outputs are auto-detected |
+
+The bundled fallback is only for `whisper.cpp` on Linux `x86_64`. Translation and transcript cleanup always require a working `llama-cli`.
 
 ## Requirements
 
 - Python 3.10+
-- `ffmpeg`
-- `ffprobe`
-- a working `whisper.cpp` executable (`whisper-cli` recommended)
+- `ffmpeg` and `ffprobe`
+- `whisper-cli` and `llama-cli` executables — provided by `setup_runtimes.py` (see Quick Setup below)
 
-`submaster` itself has no third-party Python runtime dependencies. Python 3.12 is the default tested setup in this repository.
+`submaster` has no third-party Python runtime dependencies. The package metadata in [`pyproject.toml`](pyproject.toml) allows Python `>=3.10`. Python 3.12 is the default tested setup in this repository.
 
-## Install the CLI
+## Quick Setup
 
-Install the package manually:
-
-```bash
-python3 -m pip install -e .
-```
-
-You can also run it without installation:
+Run the included setup script from the project root to clone and build both native runtimes automatically:
 
 ```bash
-python3 main.py --help
+python setup_runtimes.py
 ```
 
-Verify the main tools:
+The runtime setup script:
+
+1. Detects your GPU (CUDA, Vulkan, Metal, or CPU fallback)
+2. Checks for required build tools (`git`, `cmake`, C/C++ compiler, `ninja`) and prints per-platform install hints for anything missing
+3. Clones `whisper.cpp` and `llama.cpp` into the project root and builds them with the correct flags
+4. Verifies the resulting executables — `python -m submaster` picks them up automatically from those locations
+
+Run `python -m submaster` from this project root so it uses the local `models/` cache and the runtimes built by `setup_runtimes.py`. Pass videos or folders by absolute path, `~` path, or a path relative to the project root.
+
+Install build prerequisites first:
+
+- Ubuntu or Debian: `sudo apt install git cmake ninja-build build-essential`
+- macOS with Homebrew: `brew install git cmake ninja`
+- Windows: install [Git](https://git-scm.com/), [CMake](https://cmake.org/), and [Ninja](https://ninja-build.org/) via `winget`, Chocolatey, or Scoop
+
+For CUDA builds, the [NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) is also required. For Vulkan builds, install the [LunarG Vulkan SDK](https://vulkan.lunarg.com/) (Windows) or `libvulkan-dev` (Linux).
+
+Common options:
 
 ```bash
-python --version
-ffmpeg -version
-ffprobe -version
-whisper-cli -h
-llama-cli -h
-submaster --help
+python setup_runtimes.py --backend cpu      # force a CPU-only build
+python setup_runtimes.py --backend cuda     # force CUDA regardless of detection
+python setup_runtimes.py --no-update        # offline: skip git pull
+python setup_runtimes.py --no-rebuild       # skip build, re-verify executables only
 ```
 
-## Install `whisper.cpp`
-
-`submaster` calls a local `whisper.cpp` executable. Make sure `whisper-cli` is installed and available on `PATH`, or pass its path explicitly with `--whisper-cli`.
-
-Do not use:
-
-```bash
-pip install whisper-cli
-```
-
-That PyPI package is unrelated to the native `whisper.cpp` executable expected by this project.
-
-### Build from source
-
-### CPU build
-
-```bash
-git clone https://github.com/ggml-org/whisper.cpp.git
-cmake -S whisper.cpp -B whisper.cpp/build -G Ninja
-cmake --build whisper.cpp/build -j --config Release
-```
-
-The resulting executable is usually:
-
-```bash
-./whisper.cpp/build/bin/whisper-cli
-```
-
-You can either add that directory to `PATH` or pass it explicitly:
-
-```bash
-submaster input.mp4 --whisper-cli ./whisper.cpp/build/bin/whisper-cli
-```
-
-### NVIDIA GPU build
-
-If you want GPU execution on NVIDIA hardware, `whisper.cpp`'s official build instructions require the CUDA toolkit to be installed on the system first. Then build with CUDA enabled:
-
-```bash
-git clone https://github.com/ggml-org/whisper.cpp.git
-cmake -S whisper.cpp -B whisper.cpp/build -G Ninja -DGGML_CUDA=1
-cmake --build whisper.cpp/build -j --config Release
-```
-
-For some newer NVIDIA GPUs, `whisper.cpp` also documents explicitly setting `CMAKE_CUDA_ARCHITECTURES`.
-
-### If build tools are missing
-
-Ubuntu or Debian:
-
-```bash
-sudo apt install ffmpeg git cmake ninja-build build-essential
-```
-
-macOS with Homebrew:
-
-```bash
-brew install ffmpeg git cmake ninja
-```
-
-`whisper.cpp` can then be built with the same `cmake` commands shown above.
+On Windows, Ninja must be installed (via `winget install Ninja-build.Ninja`, Chocolatey, or Scoop) so cmake can run from any terminal. Without Ninja, cmake falls back to NMake Makefiles, which requires a Visual Studio Developer Command Prompt.
 
 ## Usage
 
-Basic:
+First `cd` to the SubMaster checkout, then run the command from there:
 
-```bash
-submaster input.mp4
-```
+- Basic transcription: `python -m submaster /path/to/input.mp4`
+- Batch-process all video files in a folder: `python -m submaster /path/to/videos`
+- Translate the generated subtitles into Italian: `python -m submaster /path/to/input.mp4 --translate it`
+- Generate a plain-text transcription and clean it locally: `python -m submaster /path/to/input.mp4 --transcribe --cleanup`
 
-Choose model and force GPU:
+### Options
 
-```bash
-submaster input.mp4 --model turbo --device gpu
-```
+If `--translate` is set, the written `.srt` file keeps the original-language subtitles and an additional `<output-stem>_<language_code>.srt` file is written with the translated subtitles.
 
-Specify language for faster decoding:
+`--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
 
-```bash
-submaster input.wav --language en --model small
-```
+When a valid `<video-stem>.txt` file exists next to a processed video, SubMaster reads chapter timestamps from it and produces a chapter-embedded copy named `<video-stem>_chapters.<ext>` next to the original. Each non-empty line must follow the format `HH:MM:SS Title`. In folder mode, every video can have its own same-stem chapter sidecar.
 
-Write subtitles into a custom folder:
-
-```bash
-submaster input.mkv --output ./subs/
-```
-
-Keep the normalized WAV file:
-
-```bash
-submaster input.mov --keep-audio
-```
-
-Use a specific `whisper.cpp` binary:
-
-```bash
-submaster input.mp4 --whisper-cli ./whisper.cpp/build/bin/whisper-cli
-```
-
-## Command Summary
+Example chapter file:
 
 ```text
-submaster INPUT
-  [-o OUTPUT]
-  [-m {tiny,base,small,medium,large,turbo}]
-  [-l LANGUAGE]
-  [--device {auto,cpu,gpu}]
-  [--models-dir MODELS_DIR]
-  [--whisper-cli PATH]
-  [--threads N]
-  [--overwrite]
-  [--keep-audio]
+00:00:00 Introduction
+00:23:20 Start
+00:40:30 First Performance
+00:40:56 Break
+01:04:44 Second Performance
+01:24:45 Crowd Shots
+01:27:45 Credits
 ```
 
-## Notes
+`--range START END` limits extraction, transcription, and optional translation to the selected source clip while keeping subtitle timestamps aligned to the original video timeline. Accepted formats are `SS`, `MM:SS`, or `HH:MM:SS` with optional `.mmm` or `,mmm` milliseconds.
 
-- `large` maps to the `ggml-large.bin` whisper.cpp model.
-- `turbo` maps to `ggml-large-v3-turbo.bin`.
-- `--device auto` currently prefers GPU on macOS or when `nvidia-smi` reports an NVIDIA device. Actual GPU execution still depends on how `whisper.cpp` was built.
-- Model files are intentionally ignored by git through `.gitignore`.
+When the positional input is a folder, SubMaster probes each direct child file with `ffprobe`. Files that do not expose a video stream are skipped. Batch outputs default to `<source-stem>.srt` next to each source file, or into a shared directory when `--output DIR` is provided.
+
+`--max-context` controls how much previously decoded text `whisper.cpp` feeds back into later decode windows. Submaster defaults this to `0` to reduce repetition loops on long recordings. Pass `--max-context -1` to restore the upstream `whisper.cpp` behavior.
+
+## Translation and Transcription
+
+### Translation Backend
+
+Subtitle translation uses **Tencent HY-MT 1.5 GGUF** models through `llama.cpp`.
+
+Available translation sizes:
+
+- `small`: `HY-MT1.5-1.8B-Q4_K_M.gguf`
+- `large`: `HY-MT1.5-7B-Q4_K_M.gguf`
+
+The project intentionally downloads the `Q4_K_M` variants instead of full-precision or FP8 checkpoints. For this CLI, the int4 GGUF models are the most suitable choice because they keep downloads, RAM usage, and VRAM usage reasonable while still fitting the local/offline execution goal on consumer hardware.
+
+The models are downloaded automatically into `models/` the first time translation is requested.
+
+### Transcript Cleanup Backend
+
+Plain-text transcription cleanup uses **Qwen3.5-9B Q4_K_M GGUF** through `llama.cpp`.
+
+- Enabled with `--transcribe --cleanup`
+- Uses a chunked cleanup pipeline with a `16K` llama.cpp context window
+- Keeps subtitle generation unchanged and writes a cleaned companion `.txt` file
+- Has no effect when `--transcribe` is not enabled
+
+The cleanup model is downloaded automatically into `models/` the first time transcription polishing is requested.
+
+## How Native Runtimes Are Located
+
+### `whisper.cpp`
+
+Lookup order:
+
+- `WHISPER_CPP_CLI` environment variable
+- Conda, `PATH`, and common local build outputs
+- bundled repo fallback on Linux `x86_64` only
+
+Common local build outputs (produced by `setup_runtimes.py`):
+
+- Linux and macOS: `./whisper.cpp/build/bin/whisper-cli`
+- Windows: `.\whisper.cpp\build\bin\Release\whisper-cli.exe`
+
+### `llama.cpp`
+
+Lookup order:
+
+- `LLAMA_CPP_CLI` environment variable
+- Conda, `PATH`, and common local build outputs
+
+Common local build outputs (produced by `setup_runtimes.py`):
+
+- Linux and macOS: `./llama.cpp/build/bin/llama-cli`
+- Windows: `.\llama.cpp\build\bin\Release\llama-cli.exe`
 
 ## Validation
 
-Run the small test suite:
+Run the test suite:
 
 ```bash
-python3 -m unittest
-```
-
-Check the CLI wiring:
-
-```bash
-python3 main.py --help
+python -m unittest
 ```
 
 ## Upstream References
 
 - OpenAI Whisper: <https://github.com/openai/whisper>
 - whisper.cpp: <https://github.com/ggml-org/whisper.cpp>
-- whisper.cpp GGML models: <https://huggingface.co/ggerganov/whisper.cpp>
+- whisper.cpp model files: <https://huggingface.co/ggerganov/whisper.cpp>
+- whisper.cpp VAD model files: <https://huggingface.co/ggml-org/whisper-vad/tree/main>
+- Tencent HY-MT1.5-1.8B-GGUF: <https://huggingface.co/tencent/HY-MT1.5-1.8B-GGUF>
+- Tencent HY-MT1.5-7B-GGUF: <https://huggingface.co/tencent/HY-MT1.5-7B-GGUF>
+- Qwen3.5-9B GGUF: <https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF>
+- llama.cpp: <https://github.com/ggml-org/llama.cpp>

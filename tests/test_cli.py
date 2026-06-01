@@ -111,6 +111,26 @@ class CliTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 parser.parse_args(["videos", "--batch"])
 
+    def test_main_rejects_launches_outside_project_root(self) -> None:
+        """Verify that the executable refuses path-sensitive runs from other folders."""
+        events: list[str] = []
+        console = SimpleNamespace(
+            banner=lambda _message: events.append("banner"),
+            dismiss_progress=lambda: events.append("dismiss"),
+            error=lambda message: events.append(f"error:{message}"),
+        )
+
+        with patch("submaster.cli.Console", return_value=console):
+            with patch("submaster.cli.get_project_root", return_value=Path("/repo/submaster")):
+                with patch("submaster.cli.Path.cwd", return_value=Path("/home/guido/Downloads")):
+                    with patch("submaster.cli.ensure_runtime_dependencies") as runtime_mock:
+                        exit_code = main(["input.mp4"])
+
+        self.assertEqual(exit_code, 1)
+        runtime_mock.assert_not_called()
+        self.assertEqual(events[:2], ["banner", "dismiss"])
+        self.assertIn("must be launched from its project root", events[2])
+
     def test_parse_time_value_accepts_flexible_timestamp_formats(self) -> None:
         """Verify that user-facing clip timestamps normalize to milliseconds."""
         self.assertEqual(parse_time_value("75.5"), 75_500)
