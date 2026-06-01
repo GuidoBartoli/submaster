@@ -10,6 +10,7 @@ from submaster.cli import (
     build_parser,
     main,
     parse_time_value,
+    resolve_chapters_path,
     resolve_batch_output_dir,
     resolve_clip_range,
     resolve_input_path,
@@ -109,6 +110,26 @@ class CliTests(unittest.TestCase):
         with patch("sys.stderr", new=io.StringIO()):
             with self.assertRaises(SystemExit):
                 parser.parse_args(["videos", "--batch"])
+
+    def test_main_rejects_launches_outside_project_root(self) -> None:
+        """Verify that the executable refuses path-sensitive runs from other folders."""
+        events: list[str] = []
+        console = SimpleNamespace(
+            banner=lambda _message: events.append("banner"),
+            dismiss_progress=lambda: events.append("dismiss"),
+            error=lambda message: events.append(f"error:{message}"),
+        )
+
+        with patch("submaster.cli.Console", return_value=console):
+            with patch("submaster.cli.get_project_root", return_value=Path("/repo/submaster")):
+                with patch("submaster.cli.Path.cwd", return_value=Path("/home/guido/Downloads")):
+                    with patch("submaster.cli.ensure_runtime_dependencies") as runtime_mock:
+                        exit_code = main(["input.mp4"])
+
+        self.assertEqual(exit_code, 1)
+        runtime_mock.assert_not_called()
+        self.assertEqual(events[:2], ["banner", "dismiss"])
+        self.assertIn("must be launched from its project root", events[2])
 
     def test_parse_time_value_accepts_flexible_timestamp_formats(self) -> None:
         """Verify that user-facing clip timestamps normalize to milliseconds."""
@@ -495,31 +516,50 @@ class CliTests(unittest.TestCase):
             self.assertFalse(transcript_path.exists())
             self.assertFalse(cleanup_path.exists())
 
-    def test_parser_accepts_chapters_flag(self) -> None:
-        """Verify that --chapters stores the provided file path."""
+    def test_parser_rejects_removed_chapters_flag(self) -> None:
+        """Verify that chapter sidecars are inferred rather than flag-driven."""
         parser = build_parser()
-        args = parser.parse_args(["input.mp4", "--chapters", "chapters.txt"])
 
-        self.assertEqual(args.chapters, "chapters.txt")
+        with patch("sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["input.mp4", "--chapters", "chapters.txt"])
 
-    def test_main_rejects_folder_input_combined_with_chapters(self) -> None:
-        """Verify that folder input and --chapters together produce an error."""
+    def test_resolve_chapters_path_uses_valid_same_stem_txt_file(self) -> None:
+        """Verify that valid chapter sidecars are discovered beside the source video."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            input_dir = Path(tmpdir) / "videos"
-            input_dir.mkdir()
+            input_path = Path(tmpdir) / "input.mp4"
+            chapters_path = Path(tmpdir) / "input.txt"
+            input_path.write_bytes(b"fake")
+            chapters_path.write_text("00:00:00 Intro\n", encoding="utf-8")
+            console = SimpleNamespace(warn=lambda _message: None)
 
-            with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
-                exit_code = main([str(input_dir), "--chapters", "chapters.txt"])
+            resolved = resolve_chapters_path(input_path, console)
 
-        self.assertEqual(exit_code, 1)
+        self.assertEqual(resolved, chapters_path)
 
-    def test_main_calls_embed_chapters_when_flag_is_set(self) -> None:
-        """Verify that --chapters triggers embed_chapters with the correct paths."""
+    def test_resolve_chapters_path_skips_invalid_same_stem_txt_file(self) -> None:
+        """Verify that malformed automatic chapter sidecars are ignored with a warning."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.mp4"
+            chapters_path = Path(tmpdir) / "input.txt"
+            input_path.write_bytes(b"fake")
+            chapters_path.write_text("0:00 Bad format\n", encoding="utf-8")
+            warnings: list[str] = []
+            console = SimpleNamespace(warn=warnings.append)
+
+            resolved = resolve_chapters_path(input_path, console)
+
+        self.assertIsNone(resolved)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Skipping invalid chapter file", warnings[0])
+
+    def test_main_calls_embed_chapters_when_same_stem_txt_exists(self) -> None:
+        """Verify that a valid same-stem chapter sidecar triggers chapter embedding."""
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.mp4"
             raw_srt_path = Path(tmpdir) / "generated.srt"
             output_path = Path(tmpdir) / "output.srt"
-            chapters_path = Path(tmpdir) / "chapters.txt"
+            chapters_path = Path(tmpdir) / "input.txt"
             work_dir = Path(tmpdir) / "work"
             work_dir.mkdir()
             input_path.write_bytes(b"fake")
@@ -547,8 +587,6 @@ class CliTests(unittest.TestCase):
                                                 str(input_path),
                                                 "--output",
                                                 str(output_path),
-                                                "--chapters",
-                                                str(chapters_path),
                                                 "--overwrite",
                                             ]
                                         )

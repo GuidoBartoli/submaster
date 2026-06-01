@@ -17,7 +17,7 @@
 - Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
 - Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
 - Optionally polishes `--transcribe` output with a local **Qwen3.5-9B** cleanup pass through `llama.cpp`
-- Optionally embeds chapter markers from a plain-text file into a copy of the input video with `--chapters`
+- Automatically embeds chapter markers from a same-stem plain-text sidecar into a copy of each input video
 - Downloads missing Whisper, HY-MT, and transcript-cleanup model files on demand into the local `models/` cache
 - Works on Linux, macOS, and Windows when `ffmpeg`, `whisper.cpp`, and `llama.cpp` are available
 - Prefers GPU execution in `--device auto` when the selected native runtime appears GPU-capable
@@ -44,19 +44,20 @@ The bundled fallback is only for `whisper.cpp` on Linux `x86_64`. Translation an
 
 ## Quick Setup
 
-Run the included setup script from the project root to clone, build, and install both native runtimes automatically:
+Run the included setup script from the project root to clone and build both native runtimes automatically:
 
 ```bash
-python -m pip install -e .
 python setup_runtimes.py
 ```
 
-The editable install provides the `submaster` command for your current Python environment. The runtime setup script:
+The runtime setup script:
 
 1. Detects your GPU (CUDA, Vulkan, Metal, or CPU fallback)
 2. Checks for required build tools (`git`, `cmake`, C/C++ compiler, `ninja`) and prints per-platform install hints for anything missing
 3. Clones `whisper.cpp` and `llama.cpp` into the project root and builds them with the correct flags
-4. Verifies the resulting executables — `submaster` picks them up automatically from those locations
+4. Verifies the resulting executables — `python -m submaster` picks them up automatically from those locations
+
+Run `python -m submaster` from this project root so it uses the local `models/` cache and the runtimes built by `setup_runtimes.py`. Pass videos or folders by absolute path, `~` path, or a path relative to the project root.
 
 Install build prerequisites first:
 
@@ -79,10 +80,12 @@ On Windows, Ninja must be installed (via `winget install Ninja-build.Ninja`, Cho
 
 ## Usage
 
-- Basic transcription: `submaster input.mp4`
-- Batch-process all video files in a folder: `submaster ./videos`
-- Translate the generated subtitles into Italian: `submaster input.mp4 --translate it`
-- Generate a plain-text transcription and clean it locally: `submaster input.mp4 --transcribe --cleanup`
+First `cd` to the SubMaster checkout, then run the command from there:
+
+- Basic transcription: `python -m submaster /path/to/input.mp4`
+- Batch-process all video files in a folder: `python -m submaster /path/to/videos`
+- Translate the generated subtitles into Italian: `python -m submaster /path/to/input.mp4 --translate it`
+- Generate a plain-text transcription and clean it locally: `python -m submaster /path/to/input.mp4 --transcribe --cleanup`
 
 ### Options
 
@@ -90,7 +93,7 @@ If `--translate` is set, the written `.srt` file keeps the original-language sub
 
 `--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
 
-`--chapters FILE` reads chapter timestamps from a plain-text file and produces a chapter-embedded copy of the input video named `<input-stem>_chapters.<ext>` next to the original. Each non-empty line must follow the format `HH:MM:SS Title`. Cannot be combined with folder input.
+When a valid `<video-stem>.txt` file exists next to a processed video, SubMaster reads chapter timestamps from it and produces a chapter-embedded copy named `<video-stem>_chapters.<ext>` next to the original. Each non-empty line must follow the format `HH:MM:SS Title`. In folder mode, every video can have its own same-stem chapter sidecar.
 
 Example chapter file:
 
