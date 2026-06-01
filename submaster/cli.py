@@ -772,11 +772,11 @@ def main(argv: list[str] | None = None) -> int:
             console.info(
                 f"Found {len(jobs)} video file(s) to process{skipped_suffix}."
             )
-            console.banner(horizontal_rule)
 
             resources = prepare_processing_resources(args, models_dir, console)
             failures = 0
 
+            console.banner(horizontal_rule)
             for index, (media_path, output_path) in enumerate(jobs, start=1):
                 try:
                     process_media_file(
