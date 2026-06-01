@@ -23,7 +23,7 @@ from .config import (
 from .console import Console
 from .errors import SubmasterError
 from .llama_cpp import LlamaCppRunner
-from .media import create_work_dir, embed_chapters, extract_audio, has_video_stream
+from .media import create_work_dir, embed_chapters, extract_audio, has_video_stream, parse_chapters
 from .models import (
     ensure_cleanup_model_available,
     ensure_model_available,
@@ -187,15 +187,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_TRANSLATION_MODEL,
         choices=tuple(TRANSLATION_MODEL_SPECS),
         help="Tencent HY-MT translation model size to use when --translate is set.",
-    )
-    parser.add_argument(
-        "--chapters",
-        metavar="FILE",
-        help=(
-            "Path to a plain-text chapter file (one 'HH:MM:SS Title' entry per line). "
-            "When set, a chapter-embedded copy of the input video is written next to it "
-            "with a '_chapters' suffix. Cannot be used with folder input."
-        ),
     )
     return parser
 
@@ -484,6 +475,21 @@ def build_translation_output_path(output_path: Path, language_code: str) -> Path
     return output_path.with_name(f"{output_path.stem}_{normalized_code}.srt")
 
 
+def resolve_chapters_path(input_path: Path, console: Console) -> Path | None:
+    """Find and validate an automatic chapter sidecar for one media file."""
+    chapters_path = input_path.with_suffix(".txt")
+    if not chapters_path.exists() or not chapters_path.is_file():
+        return None
+
+    try:
+        parse_chapters(chapters_path)
+    except SubmasterError as exc:
+        console.warn(f"Skipping invalid chapter file '{chapters_path.name}': {exc}")
+        return None
+
+    return chapters_path
+
+
 def prepare_processing_resources(
     args: argparse.Namespace,
     models_dir: Path,
@@ -671,6 +677,11 @@ def process_media_file(
             console.success(f"Transcription written to {transcript_path}")
         if cleaned_transcript_text is not None:
             console.success(f"Cleanup written to {cleanup_path}")
+
+        chapters_path = resolve_chapters_path(input_path, console)
+        if chapters_path is not None:
+            chapters_output = input_path.with_stem(input_path.stem + "_chapters")
+            embed_chapters(input_path, chapters_path, chapters_output, console)
     finally:
         if work_dir is not None:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -717,8 +728,6 @@ def main(argv: list[str] | None = None) -> int:
             raise SubmasterError(f"Input file does not exist: {input_path}")
 
         if input_path.is_dir():
-            if args.chapters:
-                raise SubmasterError("--chapters cannot be used with folder input.")
             output_dir = resolve_batch_output_dir(args.output)
             if output_dir is not None:
                 output_dir = output_dir.resolve()
@@ -787,14 +796,6 @@ def main(argv: list[str] | None = None) -> int:
             clip_range,
             skip_video_validation=True,
         )
-
-        if args.chapters:
-            chapters_path = Path(args.chapters).expanduser().resolve()
-            if not chapters_path.exists():
-                raise SubmasterError(f"Chapter file does not exist: {chapters_path}")
-            # e.g. video.mp4 → video_chapters.mp4, written next to the original
-            chapters_output = input_path.with_stem(input_path.stem + "_chapters")
-            embed_chapters(input_path, chapters_path, chapters_output, console)
 
         return 0
     except KeyboardInterrupt:

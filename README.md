@@ -17,7 +17,7 @@
 - Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
 - Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
 - Optionally polishes `--transcribe` output with a local **Qwen3.5-9B** cleanup pass through `llama.cpp`
-- Optionally embeds chapter markers from a plain-text file into a copy of the input video with `--chapters`
+- Automatically embeds chapter markers from a same-stem plain-text sidecar into a copy of each input video
 - Downloads missing Whisper, HY-MT, and transcript-cleanup model files on demand into the local `models/` cache
 - Works on Linux, macOS, and Windows when `ffmpeg`, `whisper.cpp`, and `llama.cpp` are available
 - Prefers GPU execution in `--device auto` when the selected native runtime appears GPU-capable
@@ -90,7 +90,7 @@ If `--translate` is set, the written `.srt` file keeps the original-language sub
 
 `--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
 
-`--chapters FILE` reads chapter timestamps from a plain-text file and produces a chapter-embedded copy of the input video named `<input-stem>_chapters.<ext>` next to the original. Each non-empty line must follow the format `HH:MM:SS Title`. Cannot be combined with folder input.
+When a valid `<video-stem>.txt` file exists next to a processed video, SubMaster reads chapter timestamps from it and produces a chapter-embedded copy named `<video-stem>_chapters.<ext>` next to the original. Each non-empty line must follow the format `HH:MM:SS Title`. In folder mode, every video can have its own same-stem chapter sidecar.
 
 Example chapter file:
 
