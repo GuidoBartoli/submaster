@@ -11,6 +11,11 @@ class SrtTests(unittest.TestCase):
         """Verify that millisecond timestamps render in canonical SRT format."""
         self.assertEqual(format_timestamp(3_723_456), "01:02:03,456")
 
+    def test_format_timestamp_rejects_negative_values(self) -> None:
+        """Verify that negative SRT timestamps are never rendered."""
+        with self.assertRaisesRegex(SubmasterError, "Negative timestamps"):
+            format_timestamp(-1)
+
     def test_normalize_srt_reindexes_and_normalizes_newlines(self) -> None:
         """Verify that normalization fixes numbering and line-ending style."""
         raw = (
@@ -90,6 +95,22 @@ class SrtTests(unittest.TestCase):
         """Verify that cues ending before they start are rejected."""
         with self.assertRaises(SubmasterError):
             parse_srt("1\n00:00:02,000 --> 00:00:01,000\nbad\n")
+
+    def test_parse_srt_rejects_empty_or_textless_input(self) -> None:
+        """Verify that empty documents and cues without text fail clearly."""
+        for raw_srt, message in (
+            ("", "empty"),
+            ("1\n00:00:00,000 --> 00:00:01,000\n", "Cue text is missing"),
+        ):
+            with self.assertRaisesRegex(SubmasterError, message):
+                parse_srt(raw_srt)
+
+    def test_normalize_srt_rejects_negative_shifted_timestamps(self) -> None:
+        """Verify that offsets cannot shift cue timestamps below zero."""
+        raw = "1\n00:00:00,500 --> 00:00:01,500\nhello\n"
+
+        with self.assertRaisesRegex(SubmasterError, "cannot be negative"):
+            normalize_srt(raw, offset_ms=-1_000)
 
     def test_render_transcript_merges_cues_and_breaks_on_sentence_punctuation(self) -> None:
         """Verify that transcript output uses sentence boundaries instead of subtitle line breaks."""

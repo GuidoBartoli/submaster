@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from submaster.errors import SubmasterError
 from submaster.srt import Cue
 from submaster.translation import SubtitleTranslator, resolve_translation_language
 
@@ -105,6 +106,11 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(language.code, "it")
         self.assertEqual(language.name, "Italian")
 
+    def test_resolve_translation_language_rejects_empty_values(self) -> None:
+        """Verify that blank target languages fail before prompting the model."""
+        with self.assertRaisesRegex(SubmasterError, "cannot be empty"):
+            resolve_translation_language("   ")
+
     def test_translate_cues_preserves_timings(self) -> None:
         """Verify that translated cues keep their original timing boundaries."""
         runner = DummyRunner(
@@ -133,6 +139,40 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(translated[1].text, ["come stai?"])
         self.assertEqual(translated[0].start_ms, 0)
         self.assertEqual(translated[1].end_ms, 2_000)
+
+    def test_translate_srt_renders_translated_document(self) -> None:
+        """Verify full SRT translation parses and renders canonical SRT output."""
+        runner = DummyRunner(["[[[cue:1]]]\nciao\n[[[/cue]]]"])
+        translator = SubtitleTranslator(
+            console=self._console(),
+            runner=runner,
+            model_path=Path("/tmp/HY-MT1.5-1.8B-Q4_K_M.gguf"),
+            target_language="it",
+            source_language="en",
+            requested_device="cpu",
+            threads=2,
+        )
+
+        translated = translator.translate_srt(
+            "1\n00:00:00,000 --> 00:00:01,000\nhello\n"
+        )
+
+        self.assertEqual(translated, "1\r\n00:00:00,000 --> 00:00:01,000\r\nciao\r\n")
+
+    def test_translate_cues_rejects_empty_input(self) -> None:
+        """Verify translation refuses empty cue lists."""
+        translator = SubtitleTranslator(
+            console=self._console(),
+            runner=DummyRunner([]),
+            model_path=Path("/tmp/HY-MT1.5-1.8B-Q4_K_M.gguf"),
+            target_language="it",
+            source_language="en",
+            requested_device="cpu",
+            threads=2,
+        )
+
+        with self.assertRaisesRegex(SubmasterError, "No subtitle cues"):
+            translator.translate_cues([])
 
     def test_translate_batch_falls_back_to_single_cues_when_markup_is_invalid(self) -> None:
         """Verify that invalid batch markup triggers single-cue retry behavior."""
@@ -332,6 +372,28 @@ class TranslationTests(unittest.TestCase):
 
         self.assertEqual(translated.text, ["ciao"])
 
+    def test_parse_batch_output_rejects_duplicate_cue_ids(self) -> None:
+        """Verify batch parsing rejects responses that duplicate cue markers."""
+        translator = SubtitleTranslator(
+            console=self._console(),
+            runner=DummyRunner([]),
+            model_path=Path("/tmp/HY-MT1.5-7B-Q4_K_M.gguf"),
+            target_language="it",
+            source_language="en",
+            requested_device="cpu",
+            threads=2,
+        )
+
+        parsed = translator._parse_batch_output(
+            "[[[cue:1]]]\nciao\n[[[/cue]]]\n[[[cue:1]]]\naddio\n[[[/cue]]]",
+            [
+                Cue(start_ms=0, end_ms=1_000, text=["hello"]),
+                Cue(start_ms=1_000, end_ms=2_000, text=["goodbye"]),
+            ],
+        )
+
+        self.assertIsNone(parsed)
+
     def test_build_model_prompt_uses_system_prompt_for_chat_runners(self) -> None:
         """Verify that chat-capable runners receive instructions via system prompt."""
         runner = DummyRunner(
@@ -357,6 +419,26 @@ class TranslationTests(unittest.TestCase):
         self.assertIsNotNone(system_prompt)
         self.assertIn("Translate the user's subtitle cues into Italian.", system_prompt)
         self.assertIn("Source language: English.", system_prompt)
+
+    def test_build_model_prompt_uses_chinese_instructions_for_chinese_targets(self) -> None:
+        """Verify that Chinese source or target languages use the Chinese prompt template."""
+        runner = DummyRunner([], supports_conversation=True, supports_single_turn=True)
+        translator = SubtitleTranslator(
+            console=self._console(),
+            runner=runner,
+            model_path=Path("/tmp/HY-MT1.5-7B-Q4_K_M.gguf"),
+            target_language="zh",
+            source_language="en",
+            requested_device="cpu",
+            threads=2,
+        )
+
+        _payload, system_prompt = translator._build_model_prompt(
+            [Cue(start_ms=0, end_ms=1_000, text=["hello"])]
+        )
+
+        self.assertIsNotNone(system_prompt)
+        self.assertIn("请将用户提供的字幕翻译成Chinese", system_prompt)
 
     def test_build_model_prompt_inlines_instructions_without_chat_support(self) -> None:
         """Verify that non-chat runners keep instructions inside the prompt payload."""

@@ -199,6 +199,88 @@ class LlamaCppRunnerTests(unittest.TestCase):
         self.assertIn('{"enable_thinking":false}', commands[0])
         self.assertNotIn("--reasoning-format", commands[0])
 
+    def test_run_prompt_raises_with_combined_output_on_failure(self) -> None:
+        """Verify failed llama.cpp runs preserve stdout and stderr details."""
+        runner = LlamaCppRunner.__new__(LlamaCppRunner)
+        runner.console = type(
+            "ConsoleStub",
+            (),
+            {
+                "warn": lambda self, message: None,
+                "info": lambda self, message: None,
+                "spinner": lambda self, label: _SpinnerStub(),
+            },
+        )()
+        runner.cli_path = Path("/tmp/llama-cli")
+        runner.supports_ngl_flag = False
+        runner.supports_simple_io = False
+        runner.supports_no_display_prompt = False
+        runner.supports_conversation = False
+        runner.supports_no_conversation = False
+        runner.supports_no_warmup = False
+        runner.supports_single_turn = False
+        runner.supports_chat_template_kwargs = False
+        runner.supports_reasoning_format = False
+        runner.gpu_backends = set()
+        runner._announced_modes = set()
+
+        def fake_run(_command, **kwargs):
+            kwargs["stdout"].write(b"partial output")
+            kwargs["stderr"].write(b"fatal error")
+            return type("Result", (), {"returncode": 2})()
+
+        with patch.object(LlamaCppRunner, "_verify_gpu_runtime_linkage", return_value=None):
+            with patch("submaster.llama_cpp.subprocess.run", side_effect=fake_run):
+                with self.assertRaises(SubmasterError) as ctx:
+                    runner.run_prompt(
+                        model_path=Path("/tmp/model.gguf"),
+                        prompt="translate this",
+                        requested_device="cpu",
+                        threads=4,
+                    )
+
+        self.assertIn("partial output", str(ctx.exception))
+        self.assertIn("fatal error", str(ctx.exception))
+
+    def test_run_prompt_rejects_empty_successful_output(self) -> None:
+        """Verify successful llama.cpp runs still fail when no text is produced."""
+        runner = LlamaCppRunner.__new__(LlamaCppRunner)
+        runner.console = type(
+            "ConsoleStub",
+            (),
+            {
+                "warn": lambda self, message: None,
+                "info": lambda self, message: None,
+                "spinner": lambda self, label: _SpinnerStub(),
+            },
+        )()
+        runner.cli_path = Path("/tmp/llama-cli")
+        runner.supports_ngl_flag = False
+        runner.supports_simple_io = False
+        runner.supports_no_display_prompt = False
+        runner.supports_conversation = False
+        runner.supports_no_conversation = False
+        runner.supports_no_warmup = False
+        runner.supports_single_turn = False
+        runner.supports_chat_template_kwargs = False
+        runner.supports_reasoning_format = False
+        runner.gpu_backends = set()
+        runner._announced_modes = set()
+
+        def fake_run(_command, **kwargs):
+            kwargs["stdout"].write(b"[end of text]")
+            return type("Result", (), {"returncode": 0})()
+
+        with patch.object(LlamaCppRunner, "_verify_gpu_runtime_linkage", return_value=None):
+            with patch("submaster.llama_cpp.subprocess.run", side_effect=fake_run):
+                with self.assertRaisesRegex(SubmasterError, "without producing"):
+                    runner.run_prompt(
+                        model_path=Path("/tmp/model.gguf"),
+                        prompt="translate this",
+                        requested_device="cpu",
+                        threads=4,
+                    )
+
     def test_estimated_max_tokens_uses_tagged_cue_payload(self) -> None:
         """Verify that response budgets scale with cue text instead of full prompt size."""
         runner = LlamaCppRunner.__new__(LlamaCppRunner)

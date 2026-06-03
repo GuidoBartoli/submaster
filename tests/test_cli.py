@@ -366,6 +366,31 @@ class CliTests(unittest.TestCase):
             self.assertTrue((output_dir / "alpha.srt").exists())
             self.assertTrue((output_dir / "bravo.srt").exists())
 
+    def test_main_recursive_batch_rejects_duplicate_shared_output_stems(self) -> None:
+        """Verify recursive shared-output batches reject nested files with the same stem."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "videos"
+            nested_dir = input_dir / "nested"
+            output_dir = Path(tmpdir) / "subs"
+            nested_dir.mkdir(parents=True)
+            (input_dir / "clip.mp4").write_bytes(b"fake")
+            (nested_dir / "clip.mkv").write_bytes(b"fake")
+
+            with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
+                with patch("submaster.cli.has_video_stream", return_value=True):
+                    with patch("submaster.cli.prepare_processing_resources") as resources_mock:
+                        exit_code = main(
+                            [
+                                str(input_dir),
+                                "--output",
+                                str(output_dir),
+                                "--recursive",
+                            ]
+                        )
+
+        self.assertEqual(exit_code, 1)
+        resources_mock.assert_not_called()
+
     def test_main_invokes_translation_when_requested(self) -> None:
         """Verify that translation keeps the original `.srt` and writes a suffixed translated copy."""
         with tempfile.TemporaryDirectory() as tmpdir:

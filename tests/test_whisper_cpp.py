@@ -308,6 +308,106 @@ class WhisperCppRunnerTests(unittest.TestCase):
             self.assertEqual(progress_calls, [("whisper", 100, "%", False)])
             self.assertEqual(progress_updates, [(15, ""), (100, ""), (100, "")])
 
+    def test_run_raises_with_process_output_on_failure(self) -> None:
+        """Verify failed whisper.cpp output is surfaced in the CLI error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            progress_updates: list[tuple[float, str]] = []
+
+            class DummyProgress:
+                def update(self, completed: float, extra: str = "") -> None:
+                    progress_updates.append((completed, extra))
+
+                def finish(self, completed: float | None = None, extra: str = "") -> None:
+                    progress_updates.append((completed or 0.0, extra))
+
+            console = SimpleNamespace(
+                info=lambda message: None,
+                warn=lambda message: None,
+                line=lambda message="": None,
+                progress=lambda label, total, unit="", show_value=True: DummyProgress(),
+            )
+
+            runner = WhisperCppRunner.__new__(WhisperCppRunner)
+            runner.console = console
+            runner.cli_path = Path("/tmp/whisper-cli")
+            runner.supports_no_gpu_flag = True
+            runner.gpu_backends = set()
+
+            class DummyProcess:
+                stdout = iter(["progress = 20%\n", "fatal whisper error\n"])
+
+                def wait(self) -> int:
+                    return 2
+
+            with patch.object(WhisperCppRunner, "resolve_device", return_value="cpu"):
+                with patch.object(WhisperCppRunner, "_verify_gpu_runtime_linkage", return_value=None):
+                    with patch("submaster.whisper_cpp.subprocess.Popen", return_value=DummyProcess()):
+                        with self.assertRaises(SubmasterError) as ctx:
+                            runner.run(
+                                audio_path=root / "audio.wav",
+                                model_path=root / "model.bin",
+                                output_base=root / "transcript",
+                                language="auto",
+                                requested_device="cpu",
+                                threads=4,
+                                max_context=0,
+                                vad_model_path=None,
+                                show_timings=False,
+                                show_model_info=False,
+                            )
+
+        self.assertIn("fatal whisper error", str(ctx.exception))
+        self.assertEqual(progress_updates[-1][0], 20)
+
+    def test_run_raises_when_successful_process_creates_no_srt(self) -> None:
+        """Verify zero-exit whisper.cpp runs still require an output SRT."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            class DummyProgress:
+                def update(self, _completed: float, extra: str = "") -> None:
+                    return None
+
+                def finish(self, _completed: float | None = None, extra: str = "") -> None:
+                    return None
+
+            console = SimpleNamespace(
+                info=lambda message: None,
+                warn=lambda message: None,
+                line=lambda message="": None,
+                progress=lambda label, total, unit="", show_value=True: DummyProgress(),
+            )
+
+            runner = WhisperCppRunner.__new__(WhisperCppRunner)
+            runner.console = console
+            runner.cli_path = Path("/tmp/whisper-cli")
+            runner.supports_no_gpu_flag = True
+            runner.gpu_backends = set()
+
+            class DummyProcess:
+                stdout = iter(["progress = 100%\n"])
+
+                def wait(self) -> int:
+                    return 0
+
+            with patch.object(WhisperCppRunner, "resolve_device", return_value="cpu"):
+                with patch.object(WhisperCppRunner, "_verify_gpu_runtime_linkage", return_value=None):
+                    with patch("submaster.whisper_cpp.subprocess.Popen", return_value=DummyProcess()):
+                        with self.assertRaisesRegex(SubmasterError, "without creating an SRT"):
+                            runner.run(
+                                audio_path=root / "audio.wav",
+                                model_path=root / "model.bin",
+                                output_base=root / "transcript",
+                                language="auto",
+                                requested_device="cpu",
+                                threads=4,
+                                max_context=0,
+                                vad_model_path=None,
+                                show_timings=False,
+                                show_model_info=False,
+                            )
+
     def test_resolve_srt_path_accepts_audio_suffix_fallback_name(self) -> None:
         """Verify that alternate `whisper.cpp` SRT naming schemes are accepted."""
         with tempfile.TemporaryDirectory() as tmpdir:

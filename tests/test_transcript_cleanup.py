@@ -89,6 +89,35 @@ class TranscriptCleanupTests(unittest.TestCase):
         self.assertEqual(chunks, ["One two.", "Three four?", "Five six!"])
         self.assertTrue(all(len(chunk) <= 18 for chunk in chunks))
 
+    def test_clean_text_returns_empty_without_calling_model_for_blank_input(self) -> None:
+        """Verify blank transcripts do not trigger cleanup model calls."""
+        runner = DummyRunner([])
+        cleaner = TranscriptCleaner(
+            console=self._console(),
+            runner=runner,
+            model_path=Path("/tmp/Qwen3.5-9B-Q4_K_M.gguf"),
+        )
+
+        self.assertEqual(cleaner.clean_text(" \n\n "), "")
+        self.assertEqual(runner.calls, [])
+
+    def test_build_prompt_inlines_system_prompt_for_non_chat_runners(self) -> None:
+        """Verify legacy llama.cpp modes receive cleanup instructions in the prompt."""
+        runner = DummyRunner([])
+        runner.supports_conversation = False
+        runner.supports_single_turn = False
+        cleaner = TranscriptCleaner(
+            console=self._console(),
+            runner=runner,
+            model_path=Path("/tmp/Qwen3.5-9B-Q4_K_M.gguf"),
+        )
+
+        prompt, system_prompt = cleaner._build_prompt("hello there")
+
+        self.assertIsNone(system_prompt)
+        self.assertIn(TRANSCRIPT_CLEANUP_SYSTEM_PROMPT, prompt)
+        self.assertIn("Clean this transcript:\n\nhello there", prompt)
+
     def test_clean_text_runs_chunk_passes_and_final_pass(self) -> None:
         """Verify that multi-chunk cleanup performs an additional merged pass when possible."""
         runner = DummyRunner(
