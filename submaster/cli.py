@@ -94,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     # subtitle location.
     parser.add_argument(
         "input",
-        help="Path to a video file, or a folder to batch-process direct child video files.",
+        help="Path to a video file, or a folder to batch-process video files.",
     )
     parser.add_argument(
         "-o",
@@ -170,6 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--overwrite",
         action="store_true",
         help="Overwrite the destination SRT if it already exists.",
+    )
+    parser.add_argument(
+        "--recursive",
+        action="store_true",
+        help="When input is a folder, also scan child subfolders recursively.",
     )
     parser.add_argument(
         "--keep-audio",
@@ -399,18 +404,25 @@ def resolve_input_path(raw_input: str) -> Path:
     )
 
 
-def discover_batch_inputs(input_dir: Path) -> tuple[list[Path], int]:
-    """Find direct child files that expose a video stream.
+def discover_batch_inputs(input_dir: Path, *, recursive: bool = False) -> tuple[list[Path], int]:
+    """Find child files that expose a video stream.
 
     :param input_dir: Folder whose regular files should be probed with `ffprobe`.
     :type input_dir: pathlib.Path
+    :param recursive: Whether to include files inside child subfolders.
+    :type recursive: bool
     :returns: Resolved video file paths and a count of skipped non-video or unreadable files.
     :rtype: tuple[list[pathlib.Path], int]
     """
     media_paths: list[Path] = []
     skipped_count = 0
 
-    for candidate in sorted(input_dir.iterdir(), key=lambda path: path.name.lower()):
+    candidates = input_dir.rglob("*") if recursive else input_dir.iterdir()
+    sorted_candidates = sorted(
+        candidates,
+        key=lambda path: tuple(part.lower() for part in path.relative_to(input_dir).parts),
+    )
+    for candidate in sorted_candidates:
         if not candidate.is_file():
             continue
         try:
@@ -756,8 +768,12 @@ def main(argv: list[str] | None = None) -> int:
             if output_dir is not None:
                 output_dir = output_dir.resolve()
 
-            console.info(f"Scanning batch folder: {input_path}")
-            batch_inputs, skipped_count = discover_batch_inputs(input_path)
+            scan_mode = " recursively" if args.recursive else ""
+            console.info(f"Scanning batch folder{scan_mode}: {input_path}")
+            batch_inputs, skipped_count = discover_batch_inputs(
+                input_path,
+                recursive=args.recursive,
+            )
             if not batch_inputs:
                 raise SubmasterError(
                     f"No video files were found in batch folder: {input_path}"

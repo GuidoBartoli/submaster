@@ -8,6 +8,7 @@ from unittest.mock import patch
 from submaster.cli import (
     build_batch_jobs,
     build_parser,
+    discover_batch_inputs,
     main,
     parse_time_value,
     resolve_chapters_path,
@@ -103,6 +104,13 @@ class CliTests(unittest.TestCase):
         self.assertTrue(args.transcribe)
         self.assertTrue(args.cleanup)
 
+    def test_parser_accepts_recursive_flag(self) -> None:
+        """Verify that recursive folder scanning can be enabled from the CLI."""
+        parser = build_parser()
+        args = parser.parse_args(["videos", "--recursive"])
+
+        self.assertTrue(args.recursive)
+
     def test_parser_rejects_removed_batch_flag(self) -> None:
         """Verify that folder processing is inferred rather than flag-driven."""
         parser = build_parser()
@@ -197,6 +205,35 @@ class CliTests(unittest.TestCase):
         with self.assertRaisesRegex(SubmasterError, "same subtitle path"):
             build_batch_jobs(input_paths, None)
 
+    def test_discover_batch_inputs_recurses_only_when_requested(self) -> None:
+        """Verify that recursive discovery includes videos in nested folders."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "videos"
+            nested_dir = input_dir / "nested"
+            input_dir.mkdir()
+            nested_dir.mkdir()
+            root_video = input_dir / "root.mp4"
+            nested_video = nested_dir / "nested.mp4"
+            notes_path = nested_dir / "notes.txt"
+            root_video.write_bytes(b"fake")
+            nested_video.write_bytes(b"fake")
+            notes_path.write_text("ignore me", encoding="utf-8")
+
+            def fake_has_video_stream(candidate: Path) -> bool:
+                return candidate.suffix == ".mp4"
+
+            with patch("submaster.cli.has_video_stream", side_effect=fake_has_video_stream):
+                direct_paths, direct_skipped = discover_batch_inputs(input_dir)
+                recursive_paths, recursive_skipped = discover_batch_inputs(
+                    input_dir,
+                    recursive=True,
+                )
+
+        self.assertEqual(direct_paths, [root_video.resolve()])
+        self.assertEqual(direct_skipped, 0)
+        self.assertEqual(recursive_paths, [nested_video.resolve(), root_video.resolve()])
+        self.assertEqual(recursive_skipped, 1)
+
     def test_main_batch_processes_every_detected_video_file(self) -> None:
         """Verify that folder input processes each direct child video file once."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -248,6 +285,73 @@ class CliTests(unittest.TestCase):
                                     str(input_dir),
                                     "--output",
                                     str(output_dir),
+                                ]
+                            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                processed_jobs,
+                [
+                    (alpha_path.resolve(), (output_dir / "alpha.srt").resolve(), 1, 2, True),
+                    (bravo_path.resolve(), (output_dir / "bravo.srt").resolve(), 2, 2, True),
+                ],
+            )
+            self.assertTrue((output_dir / "alpha.srt").exists())
+            self.assertTrue((output_dir / "bravo.srt").exists())
+
+    def test_main_recursive_batch_processes_nested_video_files(self) -> None:
+        """Verify that recursive folder input processes child-folder video files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "videos"
+            nested_dir = input_dir / "nested"
+            output_dir = Path(tmpdir) / "subs"
+            nested_dir.mkdir(parents=True)
+            alpha_path = input_dir / "alpha.mp4"
+            bravo_path = nested_dir / "bravo.mp4"
+            notes_path = nested_dir / "notes.txt"
+            alpha_path.write_bytes(b"fake")
+            bravo_path.write_bytes(b"fake")
+            notes_path.write_text("ignore me", encoding="utf-8")
+
+            processed_jobs: list[tuple[Path, Path, int, int, bool]] = []
+
+            def fake_has_video_stream(candidate: Path) -> bool:
+                return candidate.suffix == ".mp4"
+
+            def fake_process_media_file(
+                input_path,
+                output_path,
+                args,
+                console,
+                resources,
+                clip_range,
+                *,
+                job_index=None,
+                job_total=None,
+                skip_video_validation=False,
+            ) -> None:
+                processed_jobs.append(
+                    (
+                        input_path,
+                        output_path,
+                        job_index,
+                        job_total,
+                        skip_video_validation,
+                    )
+                )
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+
+            with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
+                with patch("submaster.cli.has_video_stream", side_effect=fake_has_video_stream):
+                    with patch("submaster.cli.prepare_processing_resources", return_value=SimpleNamespace()):
+                        with patch("submaster.cli.process_media_file", side_effect=fake_process_media_file):
+                            exit_code = main(
+                                [
+                                    str(input_dir),
+                                    "--output",
+                                    str(output_dir),
+                                    "--recursive",
                                 ]
                             )
 
