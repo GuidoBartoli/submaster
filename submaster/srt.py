@@ -269,8 +269,10 @@ def _allocate_segment_durations(
 ) -> list[tuple[int, int]]:
     """Allocate cue timings proportionally across split subtitle segments."""
     total_duration = end_ms - start_ms
-    if total_duration <= 0 or len(segments) <= 1:
+    if len(segments) <= 1:
         return [(start_ms, end_ms)]
+    if total_duration <= 0:
+        return [(start_ms, end_ms) for _ in segments]
 
     weights = [max(1, len(segment)) for segment in segments]
     total_weight = sum(weights)
