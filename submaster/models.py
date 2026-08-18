@@ -123,7 +123,7 @@ def ensure_model_available(
 
     # Reuse an existing non-empty model file instead of downloading again.
     if model_path.exists() and model_path.stat().st_size > 0:
-        console.success(f"{model_label.capitalize()} '{spec.name}' ready: {model_path}")
+        console.info(f"{model_label.capitalize()} '{spec.name}' ready: {model_path}")
         return model_path
 
     # Always write to a temporary part file so interrupted downloads do not look valid.
@@ -165,7 +165,7 @@ def ensure_model_available(
             tmp_path.unlink()
         raise SubmasterError(f"Failed to download {model_label} '{spec.name}': {exc}") from exc
 
-    console.success(f"{model_label.capitalize()} '{spec.name}' downloaded successfully.")
+    console.info(f"{model_label.capitalize()} '{spec.name}' downloaded successfully.")
     return model_path
 
 

@@ -119,7 +119,7 @@ def extract_audio(
     :type source_path: pathlib.Path
     :param destination_path: WAV path to create.
     :type destination_path: pathlib.Path
-    :param console: Console used for progress and success output.
+    :param console: Console used for progress and status output.
     :type console: Console
     :param sample_rate: Output sample rate for the normalized WAV file.
     :type sample_rate: int
@@ -335,7 +335,7 @@ def embed_chapters(
     :type chapters_path: pathlib.Path
     :param output_path: Destination video file to create.
     :type output_path: pathlib.Path
-    :param console: Console used for progress and success output.
+    :param console: Console used for progress and status output.
     :type console: Console
     :raises SubmasterError: If chapter parsing or any ffmpeg step fails.
     """
@@ -357,4 +357,4 @@ def embed_chapters(
             metadata_file.write(chapter_metadata)
         _write_chapter_video(input_path, metadata_path, output_path)
 
-    console.success(f"Chapter-embedded video written to {output_path}")
+    console.info(f"Chapter-embedded video written to {output_path}")

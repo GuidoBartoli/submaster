@@ -104,7 +104,7 @@ class ModelSpecTests(unittest.TestCase):
 
         self.assertEqual(resolved, model_path)
         urlopen_mock.assert_not_called()
-        self.assertEqual(console.events[0][0], "success")
+        self.assertEqual(console.events[0][0], "info")
 
     def test_ensure_model_available_downloads_and_replaces_part_file(self) -> None:
         """Verify that missing models are streamed to disk and finalized atomically."""
@@ -140,6 +140,7 @@ class ModelSpecTests(unittest.TestCase):
             self.assertEqual(resolved.read_bytes(), b"abcdef")
             self.assertFalse(resolved.with_suffix(".bin.part").exists())
         self.assertIn(("finish", (6, "6.0 B / 6.0 B")), console.events)
+        self.assertEqual(console.events[-1][0], "info")
 
     def test_ensure_model_available_removes_partial_file_on_download_failure(self) -> None:
         """Verify that interrupted downloads leave no reusable part file behind."""

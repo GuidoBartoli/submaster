@@ -718,20 +718,27 @@ def process_media_file(
         if args.keep_audio:
             kept_audio = output_path.with_name(f"{output_path.stem}.normalized.wav")
             shutil.copy2(audio_path, kept_audio)
-            console.success(f"Kept normalized audio at {kept_audio}")
+            console.info(f"Kept normalized audio at {kept_audio}")
 
-        console.success(f"Subtitle written to {output_path}")
         if translated_srt is not None and translated_output_path is not None:
-            console.success(f"Translated subtitle written to {translated_output_path}")
+            console.info(f"Translated subtitle written to {translated_output_path}")
         if transcript_text is not None:
-            console.success(f"Transcription written to {transcript_path}")
+            console.info(f"Transcription written to {transcript_path}")
         if cleaned_transcript_text is not None:
-            console.success(f"Cleanup written to {cleanup_path}")
+            console.info(f"Cleanup written to {cleanup_path}")
 
         chapters_path = args.chapters
         if chapters_path is not None:
             chapters_output = input_path.with_stem(input_path.stem + "_chapters")
             embed_chapters(input_path, chapters_path, chapters_output, console)
+
+        # A single-file run completes here. Batch items remain informational so
+        # the batch summary is the invocation's only success marker.
+        completion_message = f"Subtitle written to {output_path}"
+        if job_total is None:
+            console.success(completion_message)
+        else:
+            console.info(completion_message)
     finally:
         if work_dir is not None:
             shutil.rmtree(work_dir, ignore_errors=True)

@@ -71,6 +71,20 @@ class ConsoleTests(unittest.TestCase):
             f"{BOLD}[1/8] 'clip.mp4' -> 'clip.srt'{RESET}\n",
         )
 
+    def test_spinner_uses_info_for_successful_intermediate_step(self) -> None:
+        """Verify spinner completion does not consume the final success marker."""
+        console = Console()
+        console.color = False
+        console.stream = io.StringIO()
+
+        with console.spinner("Translating subtitles"):
+            pass
+
+        output = console.stream.getvalue()
+
+        self.assertIn("[INFO] Translating subtitles", output)
+        self.assertNotIn("[ OK ]", output)
+
 
 if __name__ == "__main__":
     unittest.main()

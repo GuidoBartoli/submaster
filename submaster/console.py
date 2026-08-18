@@ -450,12 +450,13 @@ class Spinner:
         :param _tb: Traceback object for the active exception, if any.
         :type _tb: object
         """
-        # Emit a final OK or ERR marker once the wrapped task completes.
+        # A spinner represents an intermediate processing step, so reserve OK
+        # for the final CLI result and report successful spinner completion as INFO.
         self._stop.set()
         self._thread.join()
         elapsed = format_seconds(time.monotonic() - self._start)
-        status = "[ OK ]" if exc is None else "[ERR!]"
-        color = GREEN if exc is None else RED
+        status = "[INFO]" if exc is None else "[ERR!]"
+        color = BLUE if exc is None else RED
         label = _style(self.console.color, color, status)
         self.console._write(f"\r{label} {self.label} ({elapsed}){' ' * 20}\n")
 
