@@ -17,8 +17,9 @@
 - Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
 - Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
 - Optionally polishes `--transcribe` output with a local **Qwen3.5-9B** cleanup pass through `llama.cpp`
-- Automatically embeds chapter markers from a same-stem plain-text sidecar into a copy of each input video
-- Downloads missing Whisper, HY-MT, and transcript-cleanup model files on demand into the local `models/` cache
+- Uses **Silero VAD 6.2.0** by default to exclude non-speech audio and reduce hallucinated subtitles
+- Optionally embeds chapter markers from a plain-text file into a copy of the input video
+- Downloads missing Whisper, VAD, HY-MT, and transcript-cleanup model files on demand into the local `models/` cache
 - Works on Linux, macOS, and Windows when `ffmpeg`, `whisper.cpp`, and `llama.cpp` are available
 - Prefers GPU execution in `--device auto` when the selected native runtime appears GPU-capable
 - Disables rolling Whisper text context by default to reduce long-form repetition loops
@@ -87,6 +88,7 @@ First `cd` to the SubMaster checkout, then run the command from there:
 - Batch-process videos in a folder and all child subfolders: `python -m submaster /path/to/videos --recursive`
 - Translate the generated subtitles into Italian: `python -m submaster /path/to/input.mp4 --translate it`
 - Generate a plain-text transcription and clean it locally: `python -m submaster /path/to/input.mp4 --transcribe --cleanup`
+- Embed chapter markers from a text file: `python -m submaster /path/to/input.mp4 --chapters /path/to/chapters.txt`
 
 ### Options
 
@@ -94,7 +96,7 @@ If `--translate` is set, the written `.srt` file keeps the original-language sub
 
 `--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
 
-When a valid `<video-stem>.txt` file exists next to a processed video, SubMaster reads chapter timestamps from it and produces a chapter-embedded copy named `<video-stem>_chapters.<ext>` next to the original. Each non-empty line must follow the format `HH:MM:SS Title`. In folder mode, every video can have its own same-stem chapter sidecar.
+`--chapters FILE` reads chapter timestamps from the specified text file and produces a chapter-embedded copy named `<video-stem>_chapters.<ext>` next to the original. Chapter files are not loaded automatically. Each non-empty line must follow the format `HH:MM:SS Title`. In folder mode, the specified chapter file is applied to every processed video.
 
 Example chapter file:
 
@@ -109,6 +111,8 @@ Example chapter file:
 ```
 
 `--range START END` limits extraction, transcription, and optional translation to the selected source clip while keeping subtitle timestamps aligned to the original video timeline. Accepted formats are `SS`, `MM:SS`, or `HH:MM:SS` with optional `.mmm` or `,mmm` milliseconds.
+
+Silero VAD 6.2.0 is enabled by default so music and silence are excluded before transcription. Use `--no-vad` for recordings where quiet, very short, or heavily masked speech is being missed. `--vad-model` can explicitly select any supported VAD model.
 
 When the positional input is a folder, SubMaster probes each direct child file with `ffprobe`; add `--recursive` to include child subfolders. Files that do not expose a video stream are skipped. Batch outputs default to `<source-stem>.srt` next to each source file, or into a shared directory when `--output DIR` is provided.
 

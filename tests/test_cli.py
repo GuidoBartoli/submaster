@@ -31,7 +31,7 @@ class CliTests(unittest.TestCase):
         self.assertTrue(args.show_timings)
 
     def test_parser_accepts_whisper_diagnostics_and_vad_flags(self) -> None:
-        """Verify that optional whisper.cpp diagnostics and VAD settings parse."""
+        """Verify that whisper.cpp diagnostics and explicit VAD settings parse."""
         parser = build_parser()
         args = parser.parse_args(
             [
@@ -44,6 +44,37 @@ class CliTests(unittest.TestCase):
 
         self.assertTrue(args.show_model_info)
         self.assertEqual(args.vad_model, "silero-v6.2.0")
+
+    def test_parser_enables_silero_vad_by_default(self) -> None:
+        """Verify that standard runs use the current Silero VAD model."""
+        parser = build_parser()
+
+        args = parser.parse_args(["input.mp4"])
+
+        self.assertEqual(args.vad_model, "silero-v6.2.0")
+
+    def test_parser_accepts_no_vad_opt_out(self) -> None:
+        """Verify that callers can disable the default VAD preprocessing."""
+        parser = build_parser()
+
+        args = parser.parse_args(["input.mp4", "--no-vad"])
+
+        self.assertIsNone(args.vad_model)
+
+    def test_parser_rejects_vad_model_with_no_vad(self) -> None:
+        """Verify that selecting and disabling VAD cannot be requested together."""
+        parser = build_parser()
+
+        with patch("sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(
+                    [
+                        "input.mp4",
+                        "--vad-model",
+                        "silero-v6.2.0",
+                        "--no-vad",
+                    ]
+                )
 
     def test_parser_accepts_translation_flags(self) -> None:
         """Verify that translation-related CLI options are accepted together."""
@@ -432,6 +463,7 @@ class CliTests(unittest.TestCase):
                                                         "--translate",
                                                         "it",
                                                         "--overwrite",
+                                                        "--no-vad",
                                                     ]
                                                 )
 
@@ -465,22 +497,24 @@ class CliTests(unittest.TestCase):
                     with patch("submaster.cli.create_work_dir", return_value=work_dir):
                         with patch("submaster.cli.extract_audio", return_value=work_dir / "audio.wav") as extract_audio_mock:
                             with patch("submaster.cli.ensure_model_available", return_value=Path(tmpdir) / "whisper.bin"):
-                                with patch("submaster.cli.WhisperCppRunner") as whisper_runner_cls:
-                                    whisper_runner = whisper_runner_cls.return_value
-                                    whisper_runner.run.return_value = raw_srt_path
-                                    exit_code = main(
-                                        [
-                                            str(input_path),
-                                            "--output",
-                                            str(output_path),
-                                            "--overwrite",
-                                            "--range",
-                                            "00:10:00",
-                                            "00:10:05",
-                                            "--max-context",
-                                            "0",
-                                        ]
-                                    )
+                                vad_model_path = Path(tmpdir) / "silero-vad.bin"
+                                with patch("submaster.cli.ensure_vad_model_available", return_value=vad_model_path):
+                                    with patch("submaster.cli.WhisperCppRunner") as whisper_runner_cls:
+                                        whisper_runner = whisper_runner_cls.return_value
+                                        whisper_runner.run.return_value = raw_srt_path
+                                        exit_code = main(
+                                            [
+                                                str(input_path),
+                                                "--output",
+                                                str(output_path),
+                                                "--overwrite",
+                                                "--range",
+                                                "00:10:00",
+                                                "00:10:05",
+                                                "--max-context",
+                                                "0",
+                                            ]
+                                        )
 
             self.assertEqual(exit_code, 0)
             extract_audio_mock.assert_called_once_with(
@@ -498,7 +532,7 @@ class CliTests(unittest.TestCase):
                 requested_device="auto",
                 threads=unittest.mock.ANY,
                 max_context=0,
-                vad_model_path=None,
+                vad_model_path=vad_model_path,
                 show_timings=False,
                 show_model_info=False,
             )
@@ -538,6 +572,7 @@ class CliTests(unittest.TestCase):
                                             str(output_path),
                                             "--transcribe",
                                             "--overwrite",
+                                            "--no-vad",
                                         ]
                                     )
 
@@ -585,6 +620,7 @@ class CliTests(unittest.TestCase):
                                                         "--transcribe",
                                                         "--cleanup",
                                                         "--overwrite",
+                                                        "--no-vad",
                                                     ]
                                                 )
 
@@ -636,6 +672,7 @@ class CliTests(unittest.TestCase):
                                                     str(output_path),
                                                     "--cleanup",
                                                     "--overwrite",
+                                                    "--no-vad",
                                                 ]
                                             )
 
@@ -645,50 +682,47 @@ class CliTests(unittest.TestCase):
             self.assertFalse(transcript_path.exists())
             self.assertFalse(cleanup_path.exists())
 
-    def test_parser_rejects_removed_chapters_flag(self) -> None:
-        """Verify that chapter sidecars are inferred rather than flag-driven."""
+    def test_parser_accepts_chapters_file(self) -> None:
+        """Verify that an explicit chapter marker file can be requested."""
         parser = build_parser()
+        args = parser.parse_args(["input.mp4", "--chapters", "chapters.txt"])
 
-        with patch("sys.stderr", new=io.StringIO()):
-            with self.assertRaises(SystemExit):
-                parser.parse_args(["input.mp4", "--chapters", "chapters.txt"])
+        self.assertEqual(args.chapters, "chapters.txt")
 
-    def test_resolve_chapters_path_uses_valid_same_stem_txt_file(self) -> None:
-        """Verify that valid chapter sidecars are discovered beside the source video."""
+    def test_resolve_chapters_path_uses_explicit_valid_file(self) -> None:
+        """Verify that a valid requested chapter file is resolved."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            input_path = Path(tmpdir) / "input.mp4"
-            chapters_path = Path(tmpdir) / "input.txt"
-            input_path.write_bytes(b"fake")
+            chapters_path = Path(tmpdir) / "custom-chapters.txt"
             chapters_path.write_text("00:00:00 Intro\n", encoding="utf-8")
-            console = SimpleNamespace(warn=lambda _message: None)
 
-            resolved = resolve_chapters_path(input_path, console)
+            resolved = resolve_chapters_path(str(chapters_path))
 
-        self.assertEqual(resolved, chapters_path)
+        self.assertEqual(resolved, chapters_path.resolve())
 
-    def test_resolve_chapters_path_skips_invalid_same_stem_txt_file(self) -> None:
-        """Verify that malformed automatic chapter sidecars are ignored with a warning."""
+    def test_resolve_chapters_path_rejects_invalid_explicit_file(self) -> None:
+        """Verify that malformed explicitly requested chapters fail validation."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            input_path = Path(tmpdir) / "input.mp4"
-            chapters_path = Path(tmpdir) / "input.txt"
-            input_path.write_bytes(b"fake")
+            chapters_path = Path(tmpdir) / "chapters.txt"
             chapters_path.write_text("0:00 Bad format\n", encoding="utf-8")
-            warnings: list[str] = []
-            console = SimpleNamespace(warn=warnings.append)
 
-            resolved = resolve_chapters_path(input_path, console)
+            with self.assertRaisesRegex(SubmasterError, "Wrong chapter format"):
+                resolve_chapters_path(str(chapters_path))
 
-        self.assertIsNone(resolved)
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("Skipping invalid chapter file", warnings[0])
+    def test_resolve_chapters_path_rejects_missing_explicit_file(self) -> None:
+        """Verify that a missing explicitly requested chapter file is reported."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing_path = Path(tmpdir) / "missing.txt"
 
-    def test_main_calls_embed_chapters_when_same_stem_txt_exists(self) -> None:
-        """Verify that a valid same-stem chapter sidecar triggers chapter embedding."""
+            with self.assertRaisesRegex(SubmasterError, "Chapter file does not exist"):
+                resolve_chapters_path(str(missing_path))
+
+    def test_main_calls_embed_chapters_when_explicitly_requested(self) -> None:
+        """Verify that --chapters triggers embedding from the requested file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.mp4"
             raw_srt_path = Path(tmpdir) / "generated.srt"
             output_path = Path(tmpdir) / "output.srt"
-            chapters_path = Path(tmpdir) / "input.txt"
+            chapters_path = Path(tmpdir) / "custom-chapters.txt"
             work_dir = Path(tmpdir) / "work"
             work_dir.mkdir()
             input_path.write_bytes(b"fake")
@@ -717,6 +751,9 @@ class CliTests(unittest.TestCase):
                                                 "--output",
                                                 str(output_path),
                                                 "--overwrite",
+                                                "--chapters",
+                                                str(chapters_path),
+                                                "--no-vad",
                                             ]
                                         )
 
@@ -726,6 +763,43 @@ class CliTests(unittest.TestCase):
         self.assertEqual(inp, input_path.resolve())
         self.assertEqual(chaps, chapters_path.resolve())
         self.assertEqual(out, input_path.with_stem("input_chapters").resolve())
+
+    def test_main_ignores_same_stem_txt_without_chapters_option(self) -> None:
+        """Verify that chapter sidecars are no longer loaded automatically."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.mp4"
+            raw_srt_path = Path(tmpdir) / "generated.srt"
+            output_path = Path(tmpdir) / "output.srt"
+            work_dir = Path(tmpdir) / "work"
+            work_dir.mkdir()
+            input_path.write_bytes(b"fake")
+            input_path.with_suffix(".txt").write_text(
+                "00:00:00 Intro\n", encoding="utf-8"
+            )
+            raw_srt_path.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8"
+            )
+
+            with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
+                with patch("submaster.cli.has_video_stream", return_value=True):
+                    with patch("submaster.cli.create_work_dir", return_value=work_dir):
+                        with patch("submaster.cli.extract_audio", return_value=work_dir / "audio.wav"):
+                            with patch("submaster.cli.ensure_model_available", return_value=Path(tmpdir) / "whisper.bin"):
+                                with patch("submaster.cli.WhisperCppRunner") as whisper_runner_cls:
+                                    whisper_runner_cls.return_value.run.return_value = raw_srt_path
+                                    with patch("submaster.cli.embed_chapters") as embed_mock:
+                                        exit_code = main(
+                                            [
+                                                str(input_path),
+                                                "--output",
+                                                str(output_path),
+                                                "--overwrite",
+                                                "--no-vad",
+                                            ]
+                                        )
+
+        self.assertEqual(exit_code, 0)
+        embed_mock.assert_not_called()
 
     def test_main_dismisses_active_progress_before_keyboard_interrupt_error(self) -> None:
         """Verify cancelled runs clear the progress bar before printing the error."""

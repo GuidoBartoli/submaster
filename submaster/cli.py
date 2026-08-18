@@ -104,6 +104,14 @@ def build_parser() -> argparse.ArgumentParser:
             "the source file. When input is a folder this must be a directory."
         ),
     )
+    parser.add_argument(
+        "--chapters",
+        metavar="FILE",
+        help=(
+            "Embed chapter markers from a text file containing one "
+            "'HH:MM:SS Title' entry per line."
+        ),
+    )
 
     # Whisper-specific options control transcription quality, language
     # handling, and runtime selection.
@@ -140,13 +148,22 @@ def build_parser() -> argparse.ArgumentParser:
             "Use 0 to disable rolling text context; use -1 to restore the upstream default."
         ),
     )
-    parser.add_argument(
+    vad_group = parser.add_mutually_exclusive_group()
+    vad_group.add_argument(
         "--vad-model",
         choices=tuple(VAD_MODEL_SPECS),
+        default=DEFAULT_VAD_MODEL,
         help=(
-            "Enable whisper.cpp VAD with the selected model. "
-            f"Use '{DEFAULT_VAD_MODEL}' for the current default VAD model."
+            "whisper.cpp VAD model used to detect speech before transcription."
         ),
+    )
+    vad_group.add_argument(
+        "--no-vad",
+        action="store_const",
+        dest="vad_model",
+        const=None,
+        default=argparse.SUPPRESS,
+        help="Disable voice activity detection and transcribe the full audio track.",
     )
     parser.add_argument(
         "--range",
@@ -508,18 +525,18 @@ def build_translation_output_path(output_path: Path, language_code: str) -> Path
     return output_path.with_name(f"{output_path.stem}_{normalized_code}.srt")
 
 
-def resolve_chapters_path(input_path: Path, console: Console) -> Path | None:
-    """Find and validate an automatic chapter sidecar for one media file."""
-    chapters_path = input_path.with_suffix(".txt")
-    if not chapters_path.exists() or not chapters_path.is_file():
+def resolve_chapters_path(requested_chapters: str | None) -> Path | None:
+    """Resolve and validate an explicitly requested chapter file."""
+    if requested_chapters is None:
         return None
 
-    try:
-        parse_chapters(chapters_path)
-    except SubmasterError as exc:
-        console.warn(f"Skipping invalid chapter file '{chapters_path.name}': {exc}")
-        return None
+    chapters_path = Path(requested_chapters).expanduser().resolve()
+    if not chapters_path.exists():
+        raise SubmasterError(f"Chapter file does not exist: {chapters_path}")
+    if not chapters_path.is_file():
+        raise SubmasterError(f"Chapter path must be a file: {chapters_path}")
 
+    parse_chapters(chapters_path)
     return chapters_path
 
 
@@ -711,7 +728,7 @@ def process_media_file(
         if cleaned_transcript_text is not None:
             console.success(f"Cleanup written to {cleanup_path}")
 
-        chapters_path = resolve_chapters_path(input_path, console)
+        chapters_path = args.chapters
         if chapters_path is not None:
             chapters_output = input_path.with_stem(input_path.stem + "_chapters")
             embed_chapters(input_path, chapters_path, chapters_output, console)
@@ -757,6 +774,7 @@ def main(argv: list[str] | None = None) -> int:
         # expensive setup.
         ensure_runtime_dependencies()
         clip_range = resolve_clip_range(args.range)
+        args.chapters = resolve_chapters_path(args.chapters)
         models_dir = Path(args.models_dir).expanduser().resolve()
 
         input_path = resolve_input_path(args.input)
