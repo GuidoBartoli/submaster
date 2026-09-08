@@ -28,6 +28,9 @@ _MATROSKA_CHAPTER_INPUT_SUFFIXES = {
     ".rmvb",
 }
 _REALMEDIA_INPUT_SUFFIXES = {".rm", ".rmvb"}
+_LEGACY_AAC_BITRATE_BPS = 96_000
+_MATROSKA_OVERHEAD_ALLOWANCE_BPS = 8_000
+_MINIMUM_H264_BITRATE_BPS = 200_000
 ChapterEncodingMode = Literal["copy", "audio", "full"]
 
 
@@ -97,6 +100,27 @@ def probe_duration_seconds(input_path: Path) -> float | None:
         return float(duration)
     except (TypeError, ValueError):
         return None
+
+
+def probe_bitrate_bps(input_path: Path) -> int | None:
+    """Extract the media container's average bitrate when available."""
+    output = _run_probe(input_path, "format=bit_rate", "-show_format")
+    payload = json.loads(output or "{}")
+    bitrate = payload.get("format", {}).get("bit_rate")
+    try:
+        parsed = int(bitrate)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def calculate_legacy_video_bitrate(input_path: Path) -> int | None:
+    """Budget H.264 bitrate so converted legacy media stays near its source size."""
+    source_bitrate = probe_bitrate_bps(input_path)
+    if source_bitrate is None:
+        return None
+    reserved_bitrate = _LEGACY_AAC_BITRATE_BPS + _MATROSKA_OVERHEAD_ALLOWANCE_BPS
+    return max(_MINIMUM_H264_BITRATE_BPS, source_bitrate - reserved_bitrate)
 
 
 def create_work_dir() -> Path:
@@ -342,6 +366,7 @@ def _chapter_write_command(
     output_path: Path,
     *,
     encoding_mode: ChapterEncodingMode,
+    target_video_bitrate: int | None = None,
 ) -> list[str]:
     """Build the FFmpeg command used to write a chapter-enabled video."""
     command = [
@@ -363,22 +388,12 @@ def _chapter_write_command(
     if encoding_mode == "full":
         # RV40 codec initialization data is lost when stream-copied from
         # RealMedia to Matroska, producing a file that cannot be decoded.
-        command.extend(
-            [
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "18",
-                "-pix_fmt",
-                "yuv420p",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-            ]
-        )
+        command.extend(["-c:v", "libx264", "-preset", "fast"])
+        if target_video_bitrate is None:
+            command.extend(["-crf", "23"])
+        else:
+            command.extend(["-b:v", str(target_video_bitrate)])
+        command.extend(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k"])
     elif encoding_mode == "audio":
         # Matroska cannot mux some legacy audio codecs, notably RealMedia Cook.
         # Keep the video untouched and convert only audio to widely supported AAC.
@@ -399,6 +414,7 @@ def _write_chapter_video(
     input_path: Path,
     metadata_path: Path,
     output_path: Path,
+    target_video_bitrate: int | None = None,
 ) -> ChapterEncodingMode:
     """Write a playable chapter-enabled video and return its encoding mode."""
     if input_path.suffix.lower() in _REALMEDIA_INPUT_SUFFIXES:
@@ -407,6 +423,7 @@ def _write_chapter_video(
             metadata_path,
             output_path,
             encoding_mode="full",
+            target_video_bitrate=target_video_bitrate,
         )
         result = _run_chapter_write(full_command)
         if result.returncode == 0:
@@ -444,6 +461,7 @@ def _write_chapter_video(
             metadata_path,
             output_path,
             encoding_mode="full",
+            target_video_bitrate=target_video_bitrate,
         )
         full_result = _run_chapter_write(full_command)
         if full_result.returncode == 0:
@@ -481,12 +499,22 @@ def embed_chapters(
     duration_ms = int(duration_s * 1_000)
 
     chapter_metadata = _build_chapter_metadata(chapters, duration_ms)
+    target_video_bitrate = (
+        calculate_legacy_video_bitrate(input_path)
+        if output_path.suffix.lower() == ".mkv"
+        else None
+    )
 
     if input_path.suffix.lower() in _REALMEDIA_INPUT_SUFFIXES:
-        console.info(
+        conversion_message = (
             "Converting RealMedia video to H.264 and audio to AAC for "
-            "Matroska compatibility."
+            "Matroska compatibility"
         )
+        if target_video_bitrate is not None:
+            conversion_message += (
+                f" (target video bitrate: {target_video_bitrate // 1_000} kb/s)"
+            )
+        console.info(conversion_message + ".")
 
     with tempfile.TemporaryDirectory(prefix="submaster-chapters-") as temp_dir:
         metadata_path = Path(temp_dir) / "metadata.txt"
@@ -498,6 +526,7 @@ def embed_chapters(
             input_path,
             metadata_path,
             output_path,
+            target_video_bitrate=target_video_bitrate,
         )
 
     if encoding_mode == "audio":

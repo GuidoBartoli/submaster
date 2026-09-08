@@ -9,9 +9,11 @@ from submaster.media import (
     _build_chapter_metadata,
     _write_chapter_video,
     build_chapter_output_path,
+    calculate_legacy_video_bitrate,
     extract_audio,
     has_video_stream,
     parse_chapters,
+    probe_bitrate_bps,
     probe_duration_seconds,
 )
 
@@ -103,6 +105,26 @@ class ParseChaptersTests(unittest.TestCase):
             result = SimpleNamespace(returncode=0, stdout=stdout, stderr="")
             with patch("submaster.media.subprocess.run", return_value=result):
                 self.assertIsNone(probe_duration_seconds(Path("/tmp/input.mp4")))
+
+    def test_probe_bitrate_bps_returns_valid_container_bitrate(self) -> None:
+        """Verify the source bitrate can be used to size legacy conversions."""
+        result = SimpleNamespace(
+            returncode=0,
+            stdout='{"format":{"bit_rate":"624556"}}',
+            stderr="",
+        )
+
+        with patch("submaster.media.subprocess.run", return_value=result):
+            bitrate = probe_bitrate_bps(Path("/tmp/input.rmvb"))
+
+        self.assertEqual(bitrate, 624_556)
+
+    def test_calculate_legacy_video_bitrate_reserves_audio_and_overhead(self) -> None:
+        """Verify converted output targets approximately the source file size."""
+        with patch("submaster.media.probe_bitrate_bps", return_value=624_556):
+            bitrate = calculate_legacy_video_bitrate(Path("/tmp/input.rmvb"))
+
+        self.assertEqual(bitrate, 520_556)
 
     def test_probe_helpers_raise_submaster_error_when_ffprobe_fails(self) -> None:
         """Verify that ffprobe failures surface stderr as a user-facing error."""
@@ -257,6 +279,7 @@ class ParseChaptersTests(unittest.TestCase):
                 Path("/tmp/movie.rmvb"),
                 Path("/tmp/metadata.txt"),
                 Path("/tmp/movie_chapters.mkv"),
+                target_video_bitrate=520_556,
             )
 
         self.assertEqual(encoding_mode, "full")
@@ -264,6 +287,8 @@ class ParseChaptersTests(unittest.TestCase):
         command = run_mock.call_args.args[0]
         self.assertIn("libx264", command)
         self.assertIn("aac", command)
+        self.assertIn("-b:v", command)
+        self.assertIn("520556", command)
 
     def test_write_chapter_video_uses_full_conversion_as_final_fallback(self) -> None:
         """Verify incompatible legacy video also gets a playable fallback."""
