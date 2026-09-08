@@ -682,47 +682,61 @@ class CliTests(unittest.TestCase):
             self.assertFalse(transcript_path.exists())
             self.assertFalse(cleanup_path.exists())
 
-    def test_parser_accepts_chapters_file(self) -> None:
-        """Verify that an explicit chapter marker file can be requested."""
+    def test_parser_rejects_removed_chapters_option(self) -> None:
+        """Verify that chapter sidecars no longer require a command-line option."""
         parser = build_parser()
-        args = parser.parse_args(["input.mp4", "--chapters", "chapters.txt"])
 
-        self.assertEqual(args.chapters, "chapters.txt")
+        with patch("sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["input.mp4", "--chapters", "chapters.txt"])
 
-    def test_resolve_chapters_path_uses_explicit_valid_file(self) -> None:
-        """Verify that a valid requested chapter file is resolved."""
+    def test_parser_help_documents_automatic_chapter_sidecars(self) -> None:
+        """Verify that CLI help explains automatic .chp discovery."""
+        help_text = build_parser().format_help()
+
+        self.assertIn("Chapter sidecars are discovered automatically", help_text)
+        self.assertIn("<video-stem>.chp", help_text)
+        self.assertIn("RMVB, AVI, and MPG/MPEG", help_text)
+        self.assertIn("<video-stem>_chapters.mkv", help_text)
+        self.assertIn("H.264/AAC", help_text)
+
+    def test_resolve_chapters_path_finds_valid_chp_sidecar(self) -> None:
+        """Verify that a valid same-stem .chp sidecar is resolved."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            chapters_path = Path(tmpdir) / "custom-chapters.txt"
+            input_path = Path(tmpdir) / "movie.final.mp4"
+            chapters_path = Path(tmpdir) / "movie.final.chp"
             chapters_path.write_text("00:00:00 Intro\n", encoding="utf-8")
 
-            resolved = resolve_chapters_path(str(chapters_path))
+            resolved = resolve_chapters_path(input_path)
 
         self.assertEqual(resolved, chapters_path.resolve())
 
-    def test_resolve_chapters_path_rejects_invalid_explicit_file(self) -> None:
-        """Verify that malformed explicitly requested chapters fail validation."""
+    def test_resolve_chapters_path_rejects_invalid_chp_sidecar(self) -> None:
+        """Verify that a malformed discovered sidecar fails validation."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            chapters_path = Path(tmpdir) / "chapters.txt"
+            input_path = Path(tmpdir) / "movie.mp4"
+            chapters_path = Path(tmpdir) / "movie.chp"
             chapters_path.write_text("0:00 Bad format\n", encoding="utf-8")
 
             with self.assertRaisesRegex(SubmasterError, "Wrong chapter format"):
-                resolve_chapters_path(str(chapters_path))
+                resolve_chapters_path(input_path)
 
-    def test_resolve_chapters_path_rejects_missing_explicit_file(self) -> None:
-        """Verify that a missing explicitly requested chapter file is reported."""
+    def test_resolve_chapters_path_returns_none_without_chp_sidecar(self) -> None:
+        """Verify that a video without a chapter sidecar needs no special handling."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            missing_path = Path(tmpdir) / "missing.txt"
+            input_path = Path(tmpdir) / "movie.mp4"
 
-            with self.assertRaisesRegex(SubmasterError, "Chapter file does not exist"):
-                resolve_chapters_path(str(missing_path))
+            resolved = resolve_chapters_path(input_path)
 
-    def test_main_calls_embed_chapters_when_explicitly_requested(self) -> None:
-        """Verify that --chapters triggers embedding from the requested file."""
+        self.assertIsNone(resolved)
+
+    def test_main_calls_embed_chapters_for_rmvb_chp_sidecar(self) -> None:
+        """Verify that an RMVB .chp sidecar triggers Matroska chapter output."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            input_path = Path(tmpdir) / "input.mp4"
+            input_path = Path(tmpdir) / "input.rmvb"
             raw_srt_path = Path(tmpdir) / "generated.srt"
             output_path = Path(tmpdir) / "output.srt"
-            chapters_path = Path(tmpdir) / "custom-chapters.txt"
+            chapters_path = Path(tmpdir) / "input.chp"
             work_dir = Path(tmpdir) / "work"
             work_dir.mkdir()
             input_path.write_bytes(b"fake")
@@ -751,8 +765,6 @@ class CliTests(unittest.TestCase):
                                                 "--output",
                                                 str(output_path),
                                                 "--overwrite",
-                                                "--chapters",
-                                                str(chapters_path),
                                                 "--no-vad",
                                             ]
                                         )
@@ -762,10 +774,10 @@ class CliTests(unittest.TestCase):
         inp, chaps, out = embed_calls[0]
         self.assertEqual(inp, input_path.resolve())
         self.assertEqual(chaps, chapters_path.resolve())
-        self.assertEqual(out, input_path.with_stem("input_chapters").resolve())
+        self.assertEqual(out, input_path.with_name("input_chapters.mkv").resolve())
 
-    def test_main_ignores_same_stem_txt_without_chapters_option(self) -> None:
-        """Verify that chapter sidecars are no longer loaded automatically."""
+    def test_main_ignores_same_stem_txt(self) -> None:
+        """Verify that legacy same-stem .txt files are not treated as chapters."""
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.mp4"
             raw_srt_path = Path(tmpdir) / "generated.srt"

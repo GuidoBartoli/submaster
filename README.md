@@ -11,14 +11,14 @@
 
 ## Features
 
-- Accepts common video formats such as MP4, MKV, MOV, AVI, and RMVB
+- Accepts common video formats such as MP4, MKV, MOV, AVI, MPG/MPEG, and RMVB
 - Batch-processes video files in a folder, with optional recursive subfolder scanning, without relying on a fixed extension allowlist
 - Extracts and normalizes mono WAV audio using `ffmpeg` before transcription
 - Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
 - Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
 - Optionally polishes `--transcribe` output with a local **Qwen3.5-9B** cleanup pass through `llama.cpp`
 - Uses **Silero VAD 6.2.0** by default to exclude non-speech audio and reduce hallucinated subtitles
-- Optionally embeds chapter markers from a plain-text file into a copy of the input video
+- Automatically embeds chapter markers from a same-directory `<video-stem>.chp` text file into a chapter-capable copy of the input video
 - Downloads missing Whisper, VAD, HY-MT, and transcript-cleanup model files on demand into the local `models/` cache
 - Works on Linux, macOS, and Windows when `ffmpeg`, `whisper.cpp`, and `llama.cpp` are available
 - Prefers GPU execution in `--device auto` when the selected native runtime appears GPU-capable
@@ -88,7 +88,7 @@ First `cd` to the SubMaster checkout, then run the command from there:
 - Batch-process videos in a folder and all child subfolders: `python -m submaster /path/to/videos --recursive`
 - Translate the generated subtitles into Italian: `python -m submaster /path/to/input.mp4 --translate it`
 - Generate a plain-text transcription and clean it locally: `python -m submaster /path/to/input.mp4 --transcribe --cleanup`
-- Embed chapter markers from a text file: `python -m submaster /path/to/input.mp4 --chapters /path/to/chapters.txt`
+- Automatically embed chapter markers: place an `input.chp` file next to `/path/to/input.mp4`, then run the normal transcription command
 
 ### Options
 
@@ -96,7 +96,9 @@ If `--translate` is set, the written `.srt` file keeps the original-language sub
 
 `--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
 
-`--chapters FILE` reads chapter timestamps from the specified text file and produces a chapter-embedded copy named `<video-stem>_chapters.<ext>` next to the original. Chapter files are not loaded automatically. Each non-empty line must follow the format `HH:MM:SS Title`. In folder mode, the specified chapter file is applied to every processed video.
+For each input video, SubMaster automatically looks for a same-directory `<video-stem>.chp` text file. For example, processing `movie.mp4` checks for `movie.chp`. If the file exists, SubMaster reads its chapter timestamps and produces a chapter-embedded copy next to the original. MP4 and other modern chapter-capable containers retain their original extension. Legacy RMVB, AVI, and MPG/MPEG inputs are written as `<video-stem>_chapters.mkv` because their original containers do not reliably support chapters. AVI and MPG/MPEG streams are copied without re-encoding when compatible. RMVB video is converted from RV40 to H.264 and its Cook audio to AAC because copying RV40 into Matroska loses decoder initialization data and produces an unplayable file. Other legacy inputs automatically fall back to AAC audio or H.264/AAC conversion only when stream-copy is rejected. If no `.chp` file exists, subtitle creation proceeds normally without chapter embedding. Each non-empty chapter line must follow the format `HH:MM:SS Title`. In folder mode, every video is matched with its own `.chp` sidecar independently.
+
+No additional Python packages are required for these formats. The existing `ffmpeg` and `ffprobe` requirements handle remuxing and conversion. RMVB conversion requires an FFmpeg build with the `libx264` H.264 encoder and the native AAC encoder; the standard Linux Mint/Ubuntu `ffmpeg` package includes both.
 
 Example chapter file:
 

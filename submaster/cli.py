@@ -23,7 +23,14 @@ from .config import (
 from .console import Console
 from .errors import SubmasterError
 from .llama_cpp import LlamaCppRunner
-from .media import create_work_dir, embed_chapters, extract_audio, has_video_stream, parse_chapters
+from .media import (
+    build_chapter_output_path,
+    create_work_dir,
+    embed_chapters,
+    extract_audio,
+    has_video_stream,
+    parse_chapters,
+)
 from .models import (
     ensure_cleanup_model_available,
     ensure_model_available,
@@ -87,6 +94,13 @@ def build_parser() -> argparse.ArgumentParser:
             "every video file in a folder, using whisper.cpp with optional offline "
             "translation and transcript cleanup via llama.cpp."
         ),
+        epilog=(
+            "Chapter sidecars are discovered automatically: for each input video, "
+            "SubMaster looks for a same-directory <video-stem>.chp file containing "
+            "one 'HH:MM:SS Title' entry per line. Legacy RMVB, AVI, and MPG/MPEG "
+            "inputs use a chapter-capable <video-stem>_chapters.mkv output; RMVB "
+            "video/audio is converted to H.264/AAC for reliable playback."
+        ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -102,14 +116,6 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Output .srt file path or directory. Defaults to the input stem next to "
             "the source file. When input is a folder this must be a directory."
-        ),
-    )
-    parser.add_argument(
-        "--chapters",
-        metavar="FILE",
-        help=(
-            "Embed chapter markers from a text file containing one "
-            "'HH:MM:SS Title' entry per line."
         ),
     )
 
@@ -525,19 +531,17 @@ def build_translation_output_path(output_path: Path, language_code: str) -> Path
     return output_path.with_name(f"{output_path.stem}_{normalized_code}.srt")
 
 
-def resolve_chapters_path(requested_chapters: str | None) -> Path | None:
-    """Resolve and validate an explicitly requested chapter file."""
-    if requested_chapters is None:
+def resolve_chapters_path(input_path: Path) -> Path | None:
+    """Return the validated ``<video-stem>.chp`` sidecar when it exists."""
+    chapters_path = input_path.with_suffix(".chp")
+    if not chapters_path.exists():
         return None
 
-    chapters_path = Path(requested_chapters).expanduser().resolve()
-    if not chapters_path.exists():
-        raise SubmasterError(f"Chapter file does not exist: {chapters_path}")
     if not chapters_path.is_file():
         raise SubmasterError(f"Chapter path must be a file: {chapters_path}")
 
     parse_chapters(chapters_path)
-    return chapters_path
+    return chapters_path.resolve()
 
 
 def prepare_processing_resources(
@@ -613,6 +617,7 @@ def process_media_file(
 ) -> None:
     """Run the full subtitle pipeline for one media file."""
     work_dir: Path | None = None
+    chapters_path = resolve_chapters_path(input_path)
     transcript_path, cleanup_path = build_transcription_output_paths(input_path, output_path)
     translated_output_path = (
         build_translation_output_path(output_path, resources.translator.target_language.code)
@@ -727,9 +732,8 @@ def process_media_file(
         if cleaned_transcript_text is not None:
             console.info(f"Cleanup written to {cleanup_path}")
 
-        chapters_path = args.chapters
         if chapters_path is not None:
-            chapters_output = input_path.with_stem(input_path.stem + "_chapters")
+            chapters_output = build_chapter_output_path(input_path)
             embed_chapters(input_path, chapters_path, chapters_output, console)
 
         # A single-file run completes here. Batch items remain informational so
@@ -768,7 +772,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     console = Console()
 
-    horizontal_rule = "-" * 80
+    horizontal_rule = "-" * 90
 
     try:
         console.banner(">>> SubMaster <<<")
@@ -781,7 +785,6 @@ def main(argv: list[str] | None = None) -> int:
         # expensive setup.
         ensure_runtime_dependencies()
         clip_range = resolve_clip_range(args.range)
-        args.chapters = resolve_chapters_path(args.chapters)
         models_dir = Path(args.models_dir).expanduser().resolve()
 
         input_path = resolve_input_path(args.input)

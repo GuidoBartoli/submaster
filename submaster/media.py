@@ -5,6 +5,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 from .config import DEFAULT_SAMPLE_RATE
 from .console import Console
@@ -15,6 +16,19 @@ from .errors import SubmasterError
 _CHAPTER_RE = re.compile(
     r"^(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})\s+(?P<title>.+)$"
 )
+
+# These legacy containers do not reliably preserve chapter metadata. Remux
+# them to Matroska, which supports chapters and the common codecs they contain.
+_MATROSKA_CHAPTER_INPUT_SUFFIXES = {
+    ".avi",
+    ".mpe",
+    ".mpeg",
+    ".mpg",
+    ".rm",
+    ".rmvb",
+}
+_REALMEDIA_INPUT_SUFFIXES = {".rm", ".rmvb"}
+ChapterEncodingMode = Literal["copy", "audio", "full"]
 
 
 def _run_probe(input_path: Path, entries: str, target: str) -> str:
@@ -282,43 +296,162 @@ def _build_chapter_metadata(chapters: list[dict[str, int | str]], duration_ms: i
     return "\n" + "\n".join(blocks) + "\n"
 
 
+def build_chapter_output_path(input_path: Path) -> Path:
+    """Return a chapter-capable output path for the input container.
+
+    MP4 and other modern containers retain their original extension. Legacy
+    AVI, MPEG Program Stream, and RealMedia inputs are remuxed to Matroska
+    because those containers do not reliably support chapter metadata.
+    """
+    output_suffix = (
+        ".mkv"
+        if input_path.suffix.lower() in _MATROSKA_CHAPTER_INPUT_SUFFIXES
+        else input_path.suffix
+    )
+    return input_path.with_name(f"{input_path.stem}_chapters{output_suffix}")
+
+
 def _export_existing_metadata(input_path: Path, metadata_path: Path) -> None:
     """Dump the container metadata of a video to an ffmetadata file."""
     result = subprocess.run(
-        ["ffmpeg", "-y", "-i", str(input_path), "-f", "ffmetadata", str(metadata_path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(input_path),
+            "-f",
+            "ffmetadata",
+            str(metadata_path),
+        ],
+        capture_output=True,
+        text=True,
         check=False,
     )
     # ffmpeg can exit 0 yet still fail to write the file when the container has no metadata
     if result.returncode != 0 or not metadata_path.exists():
-        raise SubmasterError("Unable to extract video metadata.")
+        detail = result.stderr.strip()
+        raise SubmasterError(detail or "Unable to extract video metadata.")
 
 
-def _write_chapter_video(input_path: Path, metadata_path: Path, output_path: Path) -> None:
-    """Copy a video file while replacing its container metadata."""
-    result = subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(input_path),
-            "-i",
-            str(metadata_path),
-            # Use the second input (ffmetadata file) as the metadata source
-            "-map_metadata",
-            "1",
-            # Stream-copy avoids re-encoding; only the container metadata changes
-            "-codec",
-            "copy",
-            str(output_path),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
+def _chapter_write_command(
+    input_path: Path,
+    metadata_path: Path,
+    output_path: Path,
+    *,
+    encoding_mode: ChapterEncodingMode,
+) -> list[str]:
+    """Build the FFmpeg command used to write a chapter-enabled video."""
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(input_path),
+        "-i",
+        str(metadata_path),
+        # Use the second input (ffmetadata file) as the metadata and chapter source.
+        "-map_metadata",
+        "1",
+        "-map_chapters",
+        "1",
+    ]
+    if encoding_mode == "full":
+        # RV40 codec initialization data is lost when stream-copied from
+        # RealMedia to Matroska, producing a file that cannot be decoded.
+        command.extend(
+            [
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+            ]
+        )
+    elif encoding_mode == "audio":
+        # Matroska cannot mux some legacy audio codecs, notably RealMedia Cook.
+        # Keep the video untouched and convert only audio to widely supported AAC.
+        command.extend(["-c:v", "copy", "-c:a", "aac", "-b:a", "128k"])
+    else:
+        # Stream-copy avoids re-encoding when the destination accepts every codec.
+        command.extend(["-codec", "copy"])
+    command.append(str(output_path))
+    return command
+
+
+def _run_chapter_write(command: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run one FFmpeg chapter-write attempt and capture concise diagnostics."""
+    return subprocess.run(command, capture_output=True, text=True, check=False)
+
+
+def _write_chapter_video(
+    input_path: Path,
+    metadata_path: Path,
+    output_path: Path,
+) -> ChapterEncodingMode:
+    """Write a playable chapter-enabled video and return its encoding mode."""
+    if input_path.suffix.lower() in _REALMEDIA_INPUT_SUFFIXES:
+        full_command = _chapter_write_command(
+            input_path,
+            metadata_path,
+            output_path,
+            encoding_mode="full",
+        )
+        result = _run_chapter_write(full_command)
+        if result.returncode == 0:
+            return "full"
+        detail = result.stderr.strip()
+        raise SubmasterError(detail or "Unable to write chapter-embedded video.")
+
+    copy_command = _chapter_write_command(
+        input_path,
+        metadata_path,
+        output_path,
+        encoding_mode="copy",
     )
-    if result.returncode != 0:
-        raise SubmasterError("Unable to write chapter-embedded video.")
+    result = _run_chapter_write(copy_command)
+    if result.returncode == 0:
+        return "copy"
+
+    # Legacy inputs are written as Matroska. Retry with AAC audio when a codec
+    # such as RealMedia Cook cannot be stream-copied into that container.
+    if output_path.suffix.lower() == ".mkv":
+        audio_command = _chapter_write_command(
+            input_path,
+            metadata_path,
+            output_path,
+            encoding_mode="audio",
+        )
+        audio_result = _run_chapter_write(audio_command)
+        if audio_result.returncode == 0:
+            return "audio"
+
+        # If the video codec itself cannot be represented reliably in
+        # Matroska, produce a conventional H.264/AAC file as a final fallback.
+        full_command = _chapter_write_command(
+            input_path,
+            metadata_path,
+            output_path,
+            encoding_mode="full",
+        )
+        full_result = _run_chapter_write(full_command)
+        if full_result.returncode == 0:
+            return "full"
+        result = full_result
+
+    detail = result.stderr.strip()
+    raise SubmasterError(detail or "Unable to write chapter-embedded video.")
 
 
 def embed_chapters(
@@ -349,12 +482,30 @@ def embed_chapters(
 
     chapter_metadata = _build_chapter_metadata(chapters, duration_ms)
 
+    if input_path.suffix.lower() in _REALMEDIA_INPUT_SUFFIXES:
+        console.info(
+            "Converting RealMedia video to H.264 and audio to AAC for "
+            "Matroska compatibility."
+        )
+
     with tempfile.TemporaryDirectory(prefix="submaster-chapters-") as temp_dir:
         metadata_path = Path(temp_dir) / "metadata.txt"
         # Start from the video's existing metadata so non-chapter tags are preserved
         _export_existing_metadata(input_path, metadata_path)
         with metadata_path.open("a", encoding="utf-8") as metadata_file:
             metadata_file.write(chapter_metadata)
-        _write_chapter_video(input_path, metadata_path, output_path)
+        encoding_mode = _write_chapter_video(
+            input_path,
+            metadata_path,
+            output_path,
+        )
+
+    if encoding_mode == "audio":
+        console.info("Converted legacy audio to AAC for Matroska compatibility.")
+    elif (
+        encoding_mode == "full"
+        and input_path.suffix.lower() not in _REALMEDIA_INPUT_SUFFIXES
+    ):
+        console.info("Converted legacy video to H.264 and audio to AAC.")
 
     console.info(f"Chapter-embedded video written to {output_path}")

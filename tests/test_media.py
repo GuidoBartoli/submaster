@@ -5,7 +5,15 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from submaster.errors import SubmasterError
-from submaster.media import _build_chapter_metadata, extract_audio, has_video_stream, parse_chapters, probe_duration_seconds
+from submaster.media import (
+    _build_chapter_metadata,
+    _write_chapter_video,
+    build_chapter_output_path,
+    extract_audio,
+    has_video_stream,
+    parse_chapters,
+    probe_duration_seconds,
+)
 
 
 class ParseChaptersTests(unittest.TestCase):
@@ -185,6 +193,108 @@ class ParseChaptersTests(unittest.TestCase):
 
         self.assertIn("START=0\nEND=9999\ntitle=Intro", metadata)
         self.assertIn("START=10000\nEND=20000\ntitle=Middle", metadata)
+
+    def test_chapter_output_uses_supported_container_for_common_inputs(self) -> None:
+        """Verify legacy containers use MKV while MP4 retains its extension."""
+        expected_paths = {
+            "movie.rmvb": "movie_chapters.mkv",
+            "movie.avi": "movie_chapters.mkv",
+            "movie.mp4": "movie_chapters.mp4",
+            "movie.mpg": "movie_chapters.mkv",
+        }
+
+        for input_name, expected_name in expected_paths.items():
+            with self.subTest(input_name=input_name):
+                self.assertEqual(
+                    build_chapter_output_path(Path("/tmp") / input_name),
+                    Path("/tmp") / expected_name,
+                )
+
+    def test_write_chapter_video_stream_copies_mp4(self) -> None:
+        """Verify a compatible MP4 is written without re-encoding its streams."""
+        result = SimpleNamespace(returncode=0, stderr="")
+
+        with patch("submaster.media.subprocess.run", return_value=result) as run_mock:
+            encoding_mode = _write_chapter_video(
+                Path("/tmp/movie.mp4"),
+                Path("/tmp/metadata.txt"),
+                Path("/tmp/movie_chapters.mp4"),
+            )
+
+        self.assertEqual(encoding_mode, "copy")
+        command = run_mock.call_args.args[0]
+        self.assertIn("-map_chapters", command)
+        self.assertIn("-codec", command)
+        self.assertNotIn("aac", command)
+
+    def test_write_chapter_video_retries_mkv_with_aac_audio(self) -> None:
+        """Verify legacy audio is converted when Matroska rejects stream-copy."""
+        results = [
+            SimpleNamespace(returncode=1, stderr="unsupported codec"),
+            SimpleNamespace(returncode=0, stderr=""),
+        ]
+
+        with patch("submaster.media.subprocess.run", side_effect=results) as run_mock:
+            encoding_mode = _write_chapter_video(
+                Path("/tmp/movie.avi"),
+                Path("/tmp/metadata.txt"),
+                Path("/tmp/movie_chapters.mkv"),
+            )
+
+        self.assertEqual(encoding_mode, "audio")
+        self.assertEqual(run_mock.call_count, 2)
+        retry_command = run_mock.call_args.args[0]
+        self.assertIn("-c:v", retry_command)
+        self.assertIn("-c:a", retry_command)
+        self.assertIn("aac", retry_command)
+
+    def test_write_chapter_video_transcodes_realmedia_video_and_audio(self) -> None:
+        """Verify RMVB avoids the unplayable RV40 stream-copy path."""
+        result = SimpleNamespace(returncode=0, stderr="")
+
+        with patch("submaster.media.subprocess.run", return_value=result) as run_mock:
+            encoding_mode = _write_chapter_video(
+                Path("/tmp/movie.rmvb"),
+                Path("/tmp/metadata.txt"),
+                Path("/tmp/movie_chapters.mkv"),
+            )
+
+        self.assertEqual(encoding_mode, "full")
+        self.assertEqual(run_mock.call_count, 1)
+        command = run_mock.call_args.args[0]
+        self.assertIn("libx264", command)
+        self.assertIn("aac", command)
+
+    def test_write_chapter_video_uses_full_conversion_as_final_fallback(self) -> None:
+        """Verify incompatible legacy video also gets a playable fallback."""
+        results = [
+            SimpleNamespace(returncode=1, stderr="copy failed"),
+            SimpleNamespace(returncode=1, stderr="audio-only failed"),
+            SimpleNamespace(returncode=0, stderr=""),
+        ]
+
+        with patch("submaster.media.subprocess.run", side_effect=results) as run_mock:
+            encoding_mode = _write_chapter_video(
+                Path("/tmp/movie.mpg"),
+                Path("/tmp/metadata.txt"),
+                Path("/tmp/movie_chapters.mkv"),
+            )
+
+        self.assertEqual(encoding_mode, "full")
+        self.assertEqual(run_mock.call_count, 3)
+        self.assertIn("libx264", run_mock.call_args.args[0])
+
+    def test_write_chapter_video_surfaces_ffmpeg_error(self) -> None:
+        """Verify final FFmpeg diagnostics are included in the CLI failure."""
+        result = SimpleNamespace(returncode=1, stderr="muxer rejected codec")
+
+        with patch("submaster.media.subprocess.run", return_value=result):
+            with self.assertRaisesRegex(SubmasterError, "muxer rejected codec"):
+                _write_chapter_video(
+                    Path("/tmp/movie.avi"),
+                    Path("/tmp/metadata.txt"),
+                    Path("/tmp/movie_chapters.mkv"),
+                )
 
 
 if __name__ == "__main__":
