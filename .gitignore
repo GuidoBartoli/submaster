@@ -13,3 +13,4 @@ models/*.gguf
 /.vscode
 /llama.cpp/
 /whisper.cpp/
+.codex
