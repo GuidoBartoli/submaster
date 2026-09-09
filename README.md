@@ -12,7 +12,7 @@
 ## Features
 
 - Accepts common video formats such as MP4, MKV, MOV, AVI, MPG/MPEG, and RMVB
-- Batch-processes video files in a folder, with optional recursive subfolder scanning, without relying on a fixed extension allowlist
+- Batch-processes video files in a folder, with optional recursive subfolder scanning, using a case-insensitive video extension allowlist and stream validation
 - Extracts and normalizes mono WAV audio using `ffmpeg` before transcription
 - Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
 - Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
@@ -116,7 +116,7 @@ Example chapter file:
 
 Silero VAD 6.2.0 is enabled by default so music and silence are excluded before transcription. Use `--no-vad` for recordings where quiet, very short, or heavily masked speech is being missed. `--vad-model` can explicitly select any supported VAD model.
 
-When the positional input is a folder, SubMaster probes each direct child file with `ffprobe`; add `--recursive` to include child subfolders. Files that do not expose a video stream are skipped. Batch outputs default to `<source-stem>.srt` next to each source file, or into a shared directory when `--output DIR` is provided.
+When the positional input is a folder, SubMaster first filters direct child files by video extension (case-insensitive), then validates candidates with `ffprobe`; add `--recursive` to include child subfolders. Supported extensions are `.3g2`, `.3gp`, `.asf`, `.avi`, `.divx`, `.f4v`, `.flv`, `.m2t`, `.m2ts`, `.m2v`, `.m4v`, `.mkv`, `.mov`, `.mp4`, `.mpe`, `.mpeg`, `.mpg`, `.mpv`, `.mts`, `.mxf`, `.ogm`, `.ogv`, `.qt`, `.rm`, `.rmvb`, `.ts`, `.vob`, `.webm`, and `.wmv`. Other files (including images and text) are skipped without probing. Candidates that are unreadable or do not expose a video stream are also skipped. Batch outputs default to `<source-stem>.srt` next to each source file, or into a shared directory when `--output DIR` is provided.
 
 `--max-context` controls how much previously decoded text `whisper.cpp` feeds back into later decode windows. Submaster defaults this to `0` to reduce repetition loops on long recordings. Pass `--max-context -1` to restore the upstream `whisper.cpp` behavior.
 

@@ -44,6 +44,12 @@ from .whisper_cpp import WhisperCppRunner
 
 
 _RANGE_INTEGER_RE = re.compile(r"^\d+$")
+_VIDEO_SUFFIXES = frozenset({
+    ".3g2", ".3gp", ".asf", ".avi", ".divx", ".f4v", ".flv",
+    ".m2t", ".m2ts", ".m2v", ".m4v", ".mkv", ".mov", ".mp4",
+    ".mpe", ".mpeg", ".mpg", ".mpv", ".mts", ".mxf", ".ogm",
+    ".ogv", ".qt", ".rm", ".rmvb", ".ts", ".vob", ".webm", ".wmv",
+})
 _RANGE_SECONDS_RE = re.compile(r"^(?P<seconds>\d+)(?:[,.](?P<millis>\d{1,3}))?$")
 
 
@@ -428,9 +434,9 @@ def resolve_input_path(raw_input: str) -> Path:
 
 
 def discover_batch_inputs(input_dir: Path, *, recursive: bool = False) -> tuple[list[Path], int]:
-    """Find child files that expose a video stream.
+    """Find files with a supported video extension and a video stream.
 
-    :param input_dir: Folder whose regular files should be probed with `ffprobe`.
+    :param input_dir: Folder whose video candidates should be probed with `ffprobe`.
     :type input_dir: pathlib.Path
     :param recursive: Whether to include files inside child subfolders.
     :type recursive: bool
@@ -447,6 +453,9 @@ def discover_batch_inputs(input_dir: Path, *, recursive: bool = False) -> tuple[
     )
     for candidate in sorted_candidates:
         if not candidate.is_file():
+            continue
+        if candidate.suffix.lower() not in _VIDEO_SUFFIXES:
+            skipped_count += 1
             continue
         try:
             if has_video_stream(candidate):

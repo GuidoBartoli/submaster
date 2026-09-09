@@ -265,6 +265,40 @@ class CliTests(unittest.TestCase):
         self.assertEqual(recursive_paths, [nested_video.resolve(), root_video.resolve()])
         self.assertEqual(recursive_skipped, 1)
 
+    def test_batch_skips_non_video_extensions_before_probing(self) -> None:
+        """Images and text must be excluded even if ffprobe would accept them."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir)
+            videos = [input_dir / name for name in (
+                "a.MP4", "b.mpg", "c.AVI", "d.rmvb", "e.mkv", "f.webm",
+            )]
+            excluded = [input_dir / name for name in (
+                "readme.txt", "image.png", "photo.jpg", "animation.gif",
+                "audio.mp3", "subs.srt", "unknown.customext", "extensionless",
+            )]
+            for path in videos + excluded:
+                path.write_bytes(b"fake")
+            with patch("submaster.cli.has_video_stream", return_value=True) as probe:
+                paths, skipped = discover_batch_inputs(input_dir)
+
+            self.assertEqual(paths, videos)
+            self.assertEqual(skipped, len(excluded))
+            self.assertEqual([call.args[0] for call in probe.call_args_list], videos)
+
+    def test_batch_rejects_invalid_video_candidates(self) -> None:
+        """An allowed extension alone must not qualify a file for processing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir)
+            for name in ("audio_only.mp4", "broken.avi"):
+                (input_dir / name).write_bytes(b"fake")
+            with patch("submaster.cli.has_video_stream", side_effect=[
+                False, SubmasterError("Invalid data"),
+            ]):
+                paths, skipped = discover_batch_inputs(input_dir)
+
+            self.assertEqual(paths, [])
+            self.assertEqual(skipped, 2)
+
     def test_main_batch_processes_every_detected_video_file(self) -> None:
         """Verify that folder input processes each direct child video file once."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -272,7 +306,7 @@ class CliTests(unittest.TestCase):
             output_dir = Path(tmpdir) / "subs"
             input_dir.mkdir()
             alpha_path = input_dir / "alpha.mp4"
-            bravo_path = input_dir / "bravo.customext"
+            bravo_path = input_dir / "bravo.MKV"
             notes_path = input_dir / "notes.txt"
             alpha_path.write_bytes(b"fake")
             bravo_path.write_bytes(b"fake")
