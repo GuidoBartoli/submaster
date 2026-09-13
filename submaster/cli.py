@@ -218,7 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cleanup",
         action="store_true",
-        help="Polish the transcription text with a local Qwen cleanup model. Has no effect without --transcribe.",
+        help="Polish transcription with local Qwen3.8-9B community distillation (Q4_K_M). Has no effect without --transcribe.",
     )
     parser.add_argument(
         "--show-timings",

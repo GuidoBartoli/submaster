@@ -27,7 +27,6 @@ _PROMPT_CUE_RE = re.compile(
     r"\[\[\[cue:(?P<id>\d+)\]\]\]\s*(?P<text>.*?)\s*\[\[\[/cue\]\]\]",
     re.DOTALL,
 )
-_THINK_TAG_RE = re.compile(r"</?think>", re.IGNORECASE)
 
 
 class LlamaCppRunner:
@@ -519,10 +518,19 @@ class LlamaCppRunner:
         :rtype: str
         """
         normalized = output.strip()
+        normalized = re.sub(
+            r"<think>.*?</think>", "", normalized, flags=re.IGNORECASE | re.DOTALL
+        ).strip()
+        # An opening tag may be part of the prompt and absent from stdout.
         closing_tag = re.search(r"</think>", normalized, flags=re.IGNORECASE)
         if closing_tag is not None:
             normalized = normalized[closing_tag.end():].strip()
-        normalized = _THINK_TAG_RE.sub("", normalized).strip()
+        if re.search(r"<think>", normalized, flags=re.IGNORECASE):
+            raise SubmasterError("Cleanup returned unfinished reasoning instead of a complete transcript.")
+        # Some completion runs emit prose reasoning without special tokens.
+        if re.match(r"(?:\*\*|#+\s*)?Thinking Process\s*:", normalized, re.IGNORECASE):
+            raise SubmasterError("Cleanup returned a thinking process instead of a transcript. Please retry.")
+        normalized = normalized.replace("<|im_end|>", "").strip()
         return normalized
 
     def _announce_mode_once(self, device: str) -> None:
@@ -638,8 +646,6 @@ class LlamaCppRunner:
             command.append("--no-warmup")
         if not use_chat_turn and not self.supports_no_conversation and self.supports_single_turn:
             command.append("--single-turn")
-        if disable_thinking and not use_chat_turn and self.supports_reasoning_format:
-            command.extend(["--reasoning-format", "none"])
 
         if self.supports_ngl_flag:
             gpu_layers = LLAMA_N_GPU_LAYERS_ALL if device == "gpu" else LLAMA_N_GPU_LAYERS_CPU

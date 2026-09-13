@@ -115,6 +115,8 @@ class TranscriptCleanupTests(unittest.TestCase):
         prompt, system_prompt = cleaner._build_prompt("hello there")
 
         self.assertIsNone(system_prompt)
+        self.assertTrue(prompt.startswith("<|im_start|>system\n"))
+        self.assertTrue(prompt.endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n"))
         self.assertIn(TRANSCRIPT_CLEANUP_SYSTEM_PROMPT, prompt)
         self.assertIn("Clean this transcript:\n\nhello there", prompt)
 

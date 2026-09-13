@@ -148,6 +148,17 @@ class LlamaCppRunnerTests(unittest.TestCase):
         self.assertIn("stdout", calls[0]["kwargs"])
         self.assertIn("stderr", calls[0]["kwargs"])
 
+    def test_reasoning_filter_handles_complete_and_incomplete_blocks(self) -> None:
+        runner = LlamaCppRunner.__new__(LlamaCppRunner)
+        for output in ("<think>analysis</think>Transcript.",
+                       "analysis</think>Transcript.",
+                       "Transcript.<think>analysis</think>"):
+            self.assertEqual(runner._strip_reasoning_output(output), "Transcript.")
+        for output in ("<think>unfinished", "Thinking Process:\n1. Analyze the Request"):
+            with self.assertRaises(SubmasterError):
+                runner._strip_reasoning_output(output)
+        self.assertEqual(runner._strip_reasoning_output("I think this works."), "I think this works.")
+
     def test_run_prompt_uses_chat_template_kwargs_to_disable_thinking(self) -> None:
         """Verify that chat-style Qwen runs disable thinking through template kwargs."""
         runner = LlamaCppRunner.__new__(LlamaCppRunner)

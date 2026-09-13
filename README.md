@@ -16,7 +16,7 @@
 - Extracts and normalizes mono WAV audio using `ffmpeg` before transcription
 - Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
 - Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
-- Optionally polishes `--transcribe` output with a local **Qwen3.5-9B** cleanup pass through `llama.cpp`
+- Optionally polishes `--transcribe` output with a local **Qwen3.8-9B community distillation** cleanup pass through `llama.cpp`
 - Uses **Silero VAD 6.2.0** by default to exclude non-speech audio and reduce hallucinated subtitles
 - Automatically embeds chapter markers from a same-directory `<video-stem>.chp` text file into a chapter-capable copy of the input video
 - Downloads missing Whisper, VAD, HY-MT, and transcript-cleanup model files on demand into the local `models/` cache
@@ -137,7 +137,17 @@ The models are downloaded automatically into `models/` the first time translatio
 
 ### Transcript Cleanup Backend
 
-Plain-text transcription cleanup uses **Qwen3.5-9B Q4_K_M GGUF** through `llama.cpp`.
+Plain-text transcription cleanup uses **Empero Qwen3.8-9B Distill Q4_K_M GGUF** through `llama.cpp`.
+
+This is a community distillation of Qwen3.8 into the Qwen3.5-9B architecture,
+not an official Alibaba 9B release. It retains nine billion parameters and the
+Q4_K_M quantization used previously (5.78 GB weights), suitable for an RTX 4070.
+The official Qwen3.8 family starts at 27B; this size choice preserves local resource
+requirements. Better transcript quality is not guaranteed by its reasoning benchmarks.
+
+Cleanup uses a non-thinking Qwen chat prompt, including on `llama-completion`.
+Tagged reasoning is removed; unfinished reasoning or a leading “Thinking Process:”
+response raises an error instead of being saved as a successful cleanup.
 
 - Enabled with `--transcribe --cleanup`
 - Uses a chunked cleanup pipeline with a `16K` llama.cpp context window
@@ -189,5 +199,5 @@ python -m unittest
 - whisper.cpp VAD model files: <https://huggingface.co/ggml-org/whisper-vad/tree/main>
 - Tencent HY-MT1.5-1.8B-GGUF: <https://huggingface.co/tencent/HY-MT1.5-1.8B-GGUF>
 - Tencent HY-MT1.5-7B-GGUF: <https://huggingface.co/tencent/HY-MT1.5-7B-GGUF>
-- Qwen3.5-9B GGUF: <https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF>
+- Qwen3.8-9B community GGUF: <https://huggingface.co/empero-ai/Qwen3.8-9B-Distill-GGUF>
 - llama.cpp: <https://github.com/ggml-org/llama.cpp>

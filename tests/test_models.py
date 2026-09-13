@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from submaster.config import ModelSpec
+from submaster.config import DEFAULT_CLEANUP_MODEL, ModelSpec
 from submaster.errors import SubmasterError
 from submaster.models import (
     ensure_model_available,
@@ -52,6 +52,12 @@ class ModelSpecTests(unittest.TestCase):
 
         self.assertEqual(spec.filename, "HY-MT1.5-7B-Q4_K_M.gguf")
         self.assertIn("HY-MT1.5-7B-Q4_K_M.gguf", spec.download_url)
+
+    def test_default_cleanup_is_community_distill_at_previous_size(self) -> None:
+        self.assertEqual(DEFAULT_CLEANUP_MODEL, "qwen3.8-9b-distill")
+        spec = resolve_cleanup_model_spec(DEFAULT_CLEANUP_MODEL)
+        self.assertEqual(spec.filename, "Qwen3.8-9B-Q4_K_M.gguf")
+        self.assertIn("empero-ai/Qwen3.8-9B-Distill-GGUF", spec.download_url)
 
     def test_cleanup_model_maps_to_qwen_q4_k_m(self) -> None:
         """Verify that transcript cleanup resolves to the expected Qwen GGUF file."""

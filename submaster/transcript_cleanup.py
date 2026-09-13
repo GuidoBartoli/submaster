@@ -160,7 +160,14 @@ class TranscriptCleaner:
         )
         if supports_chat_turn:
             return payload, TRANSCRIPT_CLEANUP_SYSTEM_PROMPT
-        return f"{TRANSCRIPT_CLEANUP_SYSTEM_PROMPT}\n\n{payload}", None
+        # Completion binaries do not apply the model's chat template. Serialize
+        # Qwen ChatML explicitly and prefill the closed, empty reasoning turn.
+        return (
+            f"<|im_start|>system\n{TRANSCRIPT_CLEANUP_SYSTEM_PROMPT}<|im_end|>\n"
+            f"<|im_start|>user\n{payload}<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+            None,
+        )
 
     def _estimate_max_tokens(self, text: str) -> int:
         """Estimate an output budget that leaves room for prompt tokens."""

@@ -118,6 +118,18 @@ TRANSLATION_MODEL_SPECS: dict[str, ModelSpec] = {
 
 # Qwen transcript cleanup model used by the optional transcript polishing stage.
 CLEANUP_MODEL_SPECS: dict[str, ModelSpec] = {
+    "qwen3.8-9b-distill": ModelSpec(
+        name="qwen3.8-9b-distill",
+        filename="Qwen3.8-9B-Q4_K_M.gguf",
+        download_url=(
+            "https://huggingface.co/empero-ai/Qwen3.8-9B-Distill-GGUF/resolve/main/"
+            "Qwen3.8-9B-Q4_K_M.gguf?download=true"
+        ),
+        description=(
+            "Empero community Qwen3.8 distillation into Qwen3.5-9B, Q4_K_M (5.78 GB). "
+            "Nine billion parameters for local transcript cleanup; not an official Qwen release."
+        ),
+    ),
     "qwen3.5-9b": ModelSpec(
         name="qwen3.5-9b",
         filename="Qwen3.5-9B-Q4_K_M.gguf",
@@ -139,7 +151,7 @@ MODEL_SPECS = WHISPER_MODEL_SPECS
 # Default CLI values shared across modules.
 DEFAULT_MODEL = "turbo"
 DEFAULT_TRANSLATION_MODEL = "small"
-DEFAULT_CLEANUP_MODEL = "qwen3.5-9b"
+DEFAULT_CLEANUP_MODEL = "qwen3.8-9b-distill"
 DEFAULT_VAD_MODEL = "silero-v6.2.0"
 DEFAULT_LANGUAGE = "auto"
 DEFAULT_WHISPER_MAX_CONTEXT = 0
