@@ -11,8 +11,10 @@ from .config import (
     TRANSCRIPT_CLEANUP_SYSTEM_PROMPT,
     TRANSCRIPT_CLEANUP_TEMPERATURE,
     TRANSCRIPT_CLEANUP_TOP_P,
+    TRANSCRIPT_SUMMARY_SYSTEM_PROMPT,
 )
 from .console import Console
+from .errors import ModelResponseError
 
 
 _BLANK_LINE_RE = re.compile(r"\n\s*\n+", re.MULTILINE)
@@ -131,9 +133,54 @@ class TranscriptCleaner:
 
         return self._finalize_output(merged_text)
 
-    def _cleanup_pass(self, text: str, *, show_spinner: bool) -> str:
-        """Run one cleanup pass against the local language model."""
-        prompt, system_prompt = self._build_prompt(text)
+    def summarize_text(self, cleaned_text: str) -> str:
+        """Summarize all cleaned content in bounded chunks using the cleanup model."""
+        text = self._normalize_input(cleaned_text)
+        if not text:
+            return ""
+        chunks = self._chunk_text(text)
+        chunk_label = "chunk" if len(chunks) == 1 else "chunks"
+        self.console.info(f"Prepared {len(chunks)} transcript summary {chunk_label}.")
+        progress = self.console.progress("llama", total=len(chunks), unit=" chunks")
+        summaries: list[str] = []
+        for index, chunk in enumerate(chunks, start=1):
+            summaries.append(self._cleanup_pass(chunk, show_spinner=False, summarize=True))
+            progress.update(index)
+        progress.finish(len(chunks))
+        merged = self._merge_chunks(summaries)
+        # Keep every section for very long recordings; never truncate the source
+        # or feed an unbounded collection of summaries into the context window.
+        if len(chunks) > 1 and len(merged) <= self.max_chunk_chars:
+            self.console.info("Combining transcript section summaries.")
+            merged = self._cleanup_pass(merged, show_spinner=True, summarize=True)
+        return self._finalize_output(merged)
+
+    def _cleanup_pass(
+        self, text: str, *, show_spinner: bool, summarize: bool = False, retry_depth: int = 0
+    ) -> str:
+        """Retry unusable model responses on smaller inputs, at most two levels."""
+        try:
+            return self._run_pass(text, show_spinner=show_spinner, summarize=summarize)
+        except ModelResponseError:
+            if retry_depth >= 2 or len(text) < 256:
+                raise
+            midpoint = len(text) // 2
+            split = text.rfind(" ", 0, midpoint)
+            if split <= 0:
+                split = text.find(" ", midpoint)
+            if split <= 0:
+                raise
+            self.console.warn("Model returned incomplete reasoning; retrying this section in smaller pieces.")
+            parts = [text[:split].strip(), text[split:].strip()]
+            return self._merge_chunks([
+                self._cleanup_pass(part, show_spinner=show_spinner, summarize=summarize,
+                                   retry_depth=retry_depth + 1)
+                for part in parts
+            ])
+
+    def _run_pass(self, text: str, *, show_spinner: bool, summarize: bool = False) -> str:
+        """Run a cleanup or summary pass against the same local language model."""
+        prompt, system_prompt = self._build_prompt(text, summarize=summarize)
         return self.runner.run_prompt(
             model_path=self.model_path,
             prompt=prompt,
@@ -148,22 +195,25 @@ class TranscriptCleaner:
             repeat_penalty=self.repeat_penalty,
             max_tokens=self._estimate_max_tokens(text),
             disable_thinking=True,
-            spinner_label="Running transcript cleanup pass.",
+            spinner_label="Running transcript summary pass." if summarize else "Running transcript cleanup pass.",
         )
 
-    def _build_prompt(self, text: str) -> tuple[str, str | None]:
+    def _build_prompt(self, text: str, *, summarize: bool = False) -> tuple[str, str | None]:
         """Build the effective prompt payload and optional system prompt."""
-        payload = f"Clean this transcript:\n\n{text.strip()}"
+        instruction = "Summarize this content" if summarize else "Clean this transcript"
+        system = TRANSCRIPT_SUMMARY_SYSTEM_PROMPT if summarize else TRANSCRIPT_CLEANUP_SYSTEM_PROMPT
+        payload = f"{instruction}:\n\n{text.strip()}"
         supports_chat_turn = bool(
             getattr(self.runner, "supports_conversation", False)
             and getattr(self.runner, "supports_single_turn", False)
+            and getattr(self.runner, "supports_chat_template_kwargs", False)
         )
         if supports_chat_turn:
-            return payload, TRANSCRIPT_CLEANUP_SYSTEM_PROMPT
+            return payload, system
         # Completion binaries do not apply the model's chat template. Serialize
         # Qwen ChatML explicitly and prefill the closed, empty reasoning turn.
         return (
-            f"<|im_start|>system\n{TRANSCRIPT_CLEANUP_SYSTEM_PROMPT}<|im_end|>\n"
+            f"<|im_start|>system\n{system}<|im_end|>\n"
             f"<|im_start|>user\n{payload}<|im_end|>\n"
             "<|im_start|>assistant\n<think>\n\n</think>\n\n",
             None,

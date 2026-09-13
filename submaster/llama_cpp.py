@@ -21,7 +21,7 @@ from .config import (
     LLAMA_TOP_P,
 )
 from .console import Console
-from .errors import SubmasterError
+from .errors import ModelResponseError, SubmasterError
 
 _PROMPT_CUE_RE = re.compile(
     r"\[\[\[cue:(?P<id>\d+)\]\]\]\s*(?P<text>.*?)\s*\[\[\[/cue\]\]\]",
@@ -526,10 +526,10 @@ class LlamaCppRunner:
         if closing_tag is not None:
             normalized = normalized[closing_tag.end():].strip()
         if re.search(r"<think>", normalized, flags=re.IGNORECASE):
-            raise SubmasterError("Cleanup returned unfinished reasoning instead of a complete transcript.")
+            raise ModelResponseError("Cleanup returned unfinished reasoning instead of a complete transcript.")
         # Some completion runs emit prose reasoning without special tokens.
         if re.match(r"(?:\*\*|#+\s*)?Thinking Process\s*:", normalized, re.IGNORECASE):
-            raise SubmasterError("Cleanup returned a thinking process instead of a transcript. Please retry.")
+            raise ModelResponseError("Cleanup returned a thinking process instead of a transcript. Please retry.")
         normalized = normalized.replace("<|im_end|>", "").strip()
         return normalized
 
@@ -686,5 +686,7 @@ class LlamaCppRunner:
         if disable_thinking:
             normalized_output = self._strip_reasoning_output(normalized_output)
         if not normalized_output:
+            if disable_thinking:
+                raise ModelResponseError("Model returned no usable text after removing reasoning.")
             raise SubmasterError("llama.cpp finished without producing translated text.")
         return normalized_output

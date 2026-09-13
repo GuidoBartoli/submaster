@@ -221,6 +221,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Polish transcription with local Qwen3.8-9B community distillation (Q4_K_M). Has no effect without --transcribe.",
     )
     parser.add_argument(
+        "--summarize",
+        action="store_true",
+        help="Also write a summary of the cleaned text using the same Qwen model. Has no effect without both --transcribe and --cleanup.",
+    )
+    parser.add_argument(
         "--show-timings",
         action="store_true",
         help="Display the final whisper.cpp timing summary.",
@@ -520,6 +525,8 @@ def build_processing_summary(
         summary += f" | VAD: {args.vad_model}"
     if args.transcribe:
         transcript_mode = "raw + cleanup" if args.cleanup else "raw"
+        if args.cleanup and args.summarize:
+            transcript_mode += " + summary"
         summary += f" | Transcribe: {transcript_mode}"
     if args.translate:
         summary += f" | Translate to: {args.translate} ({args.tmodel})"
@@ -628,6 +635,8 @@ def process_media_file(
     work_dir: Path | None = None
     chapters_path = resolve_chapters_path(input_path)
     transcript_path, cleanup_path = build_transcription_output_paths(input_path, output_path)
+    summarize = args.transcribe and args.cleanup and args.summarize
+    summary_path = output_path.with_name(f"{input_path.stem}_summary.txt")
     translated_output_path = (
         build_translation_output_path(output_path, resources.translator.target_language.code)
         if resources.translator is not None
@@ -650,6 +659,10 @@ def process_media_file(
         if args.transcribe and args.cleanup and cleanup_path.exists() and not args.overwrite:
             raise SubmasterError(
                 f"Cleanup file already exists: {cleanup_path}. Use --overwrite to replace it."
+            )
+        if summarize and summary_path.exists() and not args.overwrite:
+            raise SubmasterError(
+                f"Summary file already exists: {summary_path}. Use --overwrite to replace it."
             )
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -721,6 +734,12 @@ def process_media_file(
             else None
         )
 
+        summary_text = (
+            resources.transcript_cleaner.summarize_text(cleaned_transcript_text)
+            if summarize and cleaned_transcript_text is not None and resources.transcript_cleaner is not None
+            else None
+        )
+
         output_path.write_text(normalized_srt, encoding="utf-8", newline="")
         if translated_srt is not None and translated_output_path is not None:
             translated_output_path.write_text(translated_srt, encoding="utf-8", newline="")
@@ -728,6 +747,9 @@ def process_media_file(
             transcript_path.write_text(transcript_text, encoding="utf-8", newline="")
         if cleaned_transcript_text is not None:
             cleanup_path.write_text(cleaned_transcript_text, encoding="utf-8", newline="")
+
+        if summary_text is not None:
+            summary_path.write_text(summary_text, encoding="utf-8", newline="")
 
         if args.keep_audio:
             kept_audio = output_path.with_name(f"{output_path.stem}.normalized.wav")
@@ -740,6 +762,8 @@ def process_media_file(
             console.info(f"Transcription written to {transcript_path}")
         if cleaned_transcript_text is not None:
             console.info(f"Cleanup written to {cleanup_path}")
+        if summary_text is not None:
+            console.info(f"Summary written to {summary_path}")
 
         if chapters_path is not None:
             chapters_output = build_chapter_output_path(input_path)

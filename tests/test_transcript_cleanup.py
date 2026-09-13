@@ -2,8 +2,10 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from submaster.config import TRANSCRIPT_CLEANUP_SYSTEM_PROMPT
+from submaster.config import TRANSCRIPT_CLEANUP_SYSTEM_PROMPT, TRANSCRIPT_SUMMARY_SYSTEM_PROMPT
 from submaster.transcript_cleanup import TranscriptCleaner
+from submaster.errors import ModelResponseError, SubmasterError
+from unittest.mock import Mock
 
 
 class DummyRunner:
@@ -15,6 +17,7 @@ class DummyRunner:
         self.calls: list[dict[str, object]] = []
         self.supports_conversation = True
         self.supports_single_turn = True
+        self.supports_chat_template_kwargs = True
 
     def run_prompt(
         self,
@@ -119,6 +122,70 @@ class TranscriptCleanupTests(unittest.TestCase):
         self.assertTrue(prompt.endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n"))
         self.assertIn(TRANSCRIPT_CLEANUP_SYSTEM_PROMPT, prompt)
         self.assertIn("Clean this transcript:\n\nhello there", prompt)
+
+    def test_chat_without_thinking_control_uses_raw_qwen_prompt(self) -> None:
+        runner = DummyRunner([])
+        runner.supports_chat_template_kwargs = False
+        cleaner = TranscriptCleaner(self._console(), runner, Path("/tmp/model.gguf"))
+        for summarize in (False, True):
+            prompt, system = cleaner._build_prompt("Source.", summarize=summarize)
+            self.assertIsNone(system)
+            self.assertTrue(prompt.startswith("<|im_start|>system\n"))
+            self.assertTrue(prompt.endswith("</think>\n\n"))
+
+    def test_reasoning_failure_retries_smaller_pieces_without_losing_input(self) -> None:
+        cleaner = TranscriptCleaner(self._console(), DummyRunner([]), Path("/tmp/model.gguf"))
+        cleaner.console.warn = lambda message: None
+        text = "First half words. " * 30
+        cleaner._run_pass = Mock(side_effect=[ModelResponseError("reasoning"), "First.", "Second."])
+        self.assertEqual(cleaner._cleanup_pass(text, show_spinner=False), "First.\n\nSecond.")
+        calls = cleaner._run_pass.call_args_list
+        self.assertEqual(" ".join(call.args[0] for call in calls[1:]), text.strip())
+        self.assertTrue(all(len(call.args[0]) < len(text) for call in calls[1:]))
+
+    def test_reasoning_retries_are_bounded_and_runtime_errors_are_not_retried(self) -> None:
+        cleaner = TranscriptCleaner(self._console(), DummyRunner([]), Path("/tmp/model.gguf"))
+        cleaner.console.warn = lambda message: None
+        cleaner._run_pass = Mock(side_effect=ModelResponseError("reasoning"))
+        with self.assertRaises(ModelResponseError):
+            cleaner._cleanup_pass("word " * 1000, show_spinner=False, summarize=True)
+        self.assertEqual(cleaner._run_pass.call_count, 3)
+        self.assertTrue(all(call.kwargs["summarize"] for call in cleaner._run_pass.call_args_list))
+        cleaner._run_pass = Mock(side_effect=SubmasterError("GPU failure"))
+        with self.assertRaises(SubmasterError):
+            cleaner._cleanup_pass("word " * 1000, show_spinner=False)
+        self.assertEqual(cleaner._run_pass.call_count, 1)
+
+    def test_summary_uses_same_model_and_summary_system_prompt(self) -> None:
+        runner = DummyRunner(["Brief summary."])
+        cleaner = TranscriptCleaner(self._console(), runner, Path("/tmp/model.gguf"))
+        self.assertEqual(cleaner.summarize_text("Cleaned source."), "Brief summary.\n")
+        self.assertEqual(runner.calls[0]["model_path"], cleaner.model_path)
+        self.assertEqual(runner.calls[0]["system_prompt"], TRANSCRIPT_SUMMARY_SYSTEM_PROMPT)
+        self.assertEqual(runner.calls[0]["prompt"], "Summarize this content:\n\nCleaned source.")
+        self.assertTrue(runner.calls[0]["disable_thinking"])
+        runner.supports_conversation = False
+        prompt, system = cleaner._build_prompt("Source.", summarize=True)
+        self.assertIsNone(system)
+        self.assertIn(TRANSCRIPT_SUMMARY_SYSTEM_PROMPT, prompt)
+        self.assertNotIn(TRANSCRIPT_CLEANUP_SYSTEM_PROMPT, prompt)
+        self.assertTrue(prompt.endswith("</think>\n\n"))
+
+    def test_summary_chunks_and_combines_all_sections(self) -> None:
+        runner = DummyRunner(["A.", "B.", "Combined."])
+        cleaner = TranscriptCleaner(self._console(), runner, Path("/tmp/model.gguf"), max_chunk_chars=18)
+        self.assertEqual(cleaner.summarize_text("Alpha beta gamma. Delta epsilon."), "Combined.\n")
+        self.assertEqual(len(runner.calls), 3)
+        self.assertIn("A.\n\nB.", runner.calls[-1]["prompt"])
+        self.assertIn("Delta epsilon.", runner.calls[1]["prompt"])
+
+    def test_long_section_summaries_are_preserved_without_unbounded_merge(self) -> None:
+        runner = DummyRunner(["First section.", "Second section."])
+        cleaner = TranscriptCleaner(self._console(), runner, Path("/tmp/model.gguf"), max_chunk_chars=18)
+        self.assertEqual(cleaner.summarize_text("Alpha beta gamma. Delta epsilon."),
+                         "First section.\n\nSecond section.\n")
+        self.assertEqual(len(runner.calls), 2)
+        self.assertEqual(cleaner.summarize_text("  "), "")
 
     def test_clean_text_runs_chunk_passes_and_final_pass(self) -> None:
         """Verify that multi-chunk cleanup performs an additional merged pass when possible."""

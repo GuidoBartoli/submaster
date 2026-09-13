@@ -88,13 +88,14 @@ First `cd` to the SubMaster checkout, then run the command from there:
 - Batch-process videos in a folder and all child subfolders: `python -m submaster /path/to/videos --recursive`
 - Translate the generated subtitles into Italian: `python -m submaster /path/to/input.mp4 --translate it`
 - Generate a plain-text transcription and clean it locally: `python -m submaster /path/to/input.mp4 --transcribe --cleanup`
+- Summarize the cleaned transcription: `python -m submaster /path/to/input.mp4 --transcribe --cleanup --summarize`
 - Automatically embed chapter markers: place an `input.chp` file next to `/path/to/input.mp4`, then run the normal transcription command
 
 ### Options
 
 If `--translate` is set, the written `.srt` file keeps the original-language subtitles and an additional `<output-stem>_<language_code>.srt` file is written with the translated subtitles.
 
-`--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription.
+`--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription. Add `--summarize` alongside both flags to write `<video-stem>_summary.txt` from the cleaned text using the same Qwen model. It has no effect if either prerequisite is missing. Summary files follow the same output-directory and `--overwrite` rules.
 
 For each input video, SubMaster automatically looks for a same-directory `<video-stem>.chp` text file. For example, processing `movie.mp4` checks for `movie.chp`. If the file exists, SubMaster reads its chapter timestamps and produces a chapter-embedded copy next to the original. MP4 and other modern chapter-capable containers retain their original extension. Legacy RMVB, AVI, and MPG/MPEG inputs are written as `<video-stem>_chapters.mkv` because their original containers do not reliably support chapters. AVI and MPG/MPEG streams are copied without re-encoding when compatible. RMVB video is converted from RV40 to H.264 and its Cook audio to AAC because copying RV40 into Matroska loses decoder initialization data and produces an unplayable file. The H.264 bitrate is calculated from the source container bitrate, reserving 96 kb/s for AAC audio and a small Matroska overhead allowance so the converted file remains approximately the same size as the source. Other legacy inputs automatically fall back to AAC audio or H.264/AAC conversion only when stream-copy is rejected. If no `.chp` file exists, subtitle creation proceeds normally without chapter embedding. Each non-empty chapter line must follow the format `HH:MM:SS Title`. In folder mode, every video is matched with its own `.chp` sidecar independently.
 
@@ -146,13 +147,19 @@ The official Qwen3.8 family starts at 27B; this size choice preserves local reso
 requirements. Better transcript quality is not guaranteed by its reasoning benchmarks.
 
 Cleanup uses a non-thinking Qwen chat prompt, including on `llama-completion`.
+Chat mode is used only when the runtime also supports disabling thinking through
+chat-template options; otherwise Qwen framing and an empty reasoning turn are supplied explicitly.
 Tagged reasoning is removed; unfinished reasoning or a leading “Thinking Process:”
-response raises an error instead of being saved as a successful cleanup.
+response retries the affected section in smaller pieces (at most two split levels).
+If those attempts fail, the run reports an error rather than saving reasoning as successful output.
+The same recovery applies to summarization; runtime errors are not retried.
 
 - Enabled with `--transcribe --cleanup`
 - Uses a chunked cleanup pipeline with a `16K` llama.cpp context window
 - Keeps subtitle generation unchanged and writes a cleaned companion `.txt` file
 - Has no effect when `--transcribe` is not enabled
+
+Summarization uses `TRANSCRIPT_SUMMARY_SYSTEM_PROMPT` in `submaster/config.py`, preserves the source language, and condenses key points and practical steps without adding facts. Long transcripts are summarized in chunks; section summaries are combined in a final pass when they fit the chunk limit, otherwise retained in source order.
 
 The cleanup model is downloaded automatically into `models/` the first time transcription polishing is requested.
 

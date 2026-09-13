@@ -11,6 +11,7 @@ from submaster.cli import (
     discover_batch_inputs,
     main,
     parse_time_value,
+    process_media_file,
     resolve_chapters_path,
     resolve_batch_output_dir,
     resolve_clip_range,
@@ -605,12 +606,14 @@ class CliTests(unittest.TestCase):
                                             "--output",
                                             str(output_path),
                                             "--transcribe",
+                                            "--summarize",
                                             "--overwrite",
                                             "--no-vad",
                                         ]
                                     )
 
             self.assertEqual(exit_code, 0)
+            self.assertFalse(output_path.with_name("input_summary.txt").exists())
             self.assertEqual(
                 transcript_path.read_text(encoding="utf-8"),
                 "hello how are you?\n",
@@ -673,6 +676,83 @@ class CliTests(unittest.TestCase):
                 "1\n00:00:00,000 --> 00:00:01,000\nhello there\n",
             )
 
+    def test_summary_collision_requires_overwrite_before_processing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.mp4"
+            output_path = Path(tmpdir) / "custom.srt"
+            summary_path = Path(tmpdir) / "input_summary.txt"
+            summary_path.write_text("Keep this summary.")
+            args = build_parser().parse_args([str(input_path), "--transcribe", "--cleanup", "--summarize"])
+            with patch("submaster.cli.create_work_dir") as create_work:
+                with self.assertRaisesRegex(SubmasterError, "Summary file already exists"):
+                    process_media_file(input_path, output_path, args,
+                                       unittest.mock.Mock(), SimpleNamespace(translator=None), None)
+                create_work.assert_not_called()
+            self.assertEqual(summary_path.read_text(), "Keep this summary.")
+            self.assertFalse(output_path.exists())
+
+    def test_main_summarizes_cleaned_transcription(self) -> None:
+        """Summary consumes cleaned text and follows media naming with custom output."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.mp4"
+            raw_srt_path = Path(tmpdir) / "generated.srt"
+            output_path = Path(tmpdir) / "output.srt"
+            transcript_path = output_path.with_name("input_transcript.txt")
+            cleanup_path = output_path.with_name("input_cleanup.txt")
+            work_dir = Path(tmpdir) / "work"
+            work_dir.mkdir()
+            input_path.write_bytes(b"fake")
+            raw_srt_path.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nhello there\n",
+                encoding="utf-8",
+            )
+
+            transcript_cleaner_instance = unittest.mock.Mock()
+            transcript_cleaner_instance.clean_text.return_value = "Hello there.\n"
+            transcript_cleaner_instance.summarize_text.return_value = "A greeting.\n"
+            output_path.with_name("input_summary.txt").write_text("old summary")
+
+            with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
+                with patch("submaster.cli.has_video_stream", return_value=True):
+                    with patch("submaster.cli.create_work_dir", return_value=work_dir):
+                        with patch("submaster.cli.extract_audio", return_value=work_dir / "audio.wav"):
+                            with patch("submaster.cli.ensure_model_available", return_value=Path(tmpdir) / "whisper.bin"):
+                                with patch("submaster.cli.ensure_cleanup_model_available", return_value=Path(tmpdir) / "Qwen3.5-9B-Q4_K_M.gguf"):
+                                    with patch("submaster.cli.WhisperCppRunner") as whisper_runner_cls:
+                                        whisper_runner = whisper_runner_cls.return_value
+                                        whisper_runner.run.return_value = raw_srt_path
+                                        with patch("submaster.cli.LlamaCppRunner"):
+                                            with patch("submaster.cli.TranscriptCleaner", return_value=transcript_cleaner_instance):
+                                                exit_code = main(
+                                                    [
+                                                        str(input_path),
+                                                        "--output",
+                                                        str(output_path),
+                                                        "--transcribe",
+                                                        "--cleanup",
+                                                        "--summarize",
+                                                        "--overwrite",
+                                                        "--no-vad",
+                                                    ]
+                                                )
+
+            self.assertEqual(exit_code, 0)
+            transcript_cleaner_instance.summarize_text.assert_called_once_with("Hello there.\n")
+            self.assertEqual(output_path.with_name("input_summary.txt").read_text(), "A greeting.\n")
+            self.assertEqual(
+                transcript_path.read_text(encoding="utf-8"),
+                "hello there\n",
+            )
+            self.assertEqual(
+                cleanup_path.read_text(encoding="utf-8"),
+                "Hello there.\n",
+            )
+            transcript_cleaner_instance.clean_text.assert_called_once_with("hello there\n")
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                "1\n00:00:00,000 --> 00:00:01,000\nhello there\n",
+            )
+
     def test_main_ignores_cleanup_without_transcribe(self) -> None:
         """Verify that `--cleanup` alone does not prepare the cleanup model or runner."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -705,6 +785,7 @@ class CliTests(unittest.TestCase):
                                                     "--output",
                                                     str(output_path),
                                                     "--cleanup",
+                                                    "--summarize",
                                                     "--overwrite",
                                                     "--no-vad",
                                                 ]
@@ -715,6 +796,7 @@ class CliTests(unittest.TestCase):
             llama_runner_cls.assert_not_called()
             self.assertFalse(transcript_path.exists())
             self.assertFalse(cleanup_path.exists())
+            self.assertFalse(output_path.with_name("input_summary.txt").exists())
 
     def test_parser_rejects_removed_chapters_option(self) -> None:
         """Verify that chapter sidecars no longer require a command-line option."""
