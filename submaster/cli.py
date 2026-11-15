@@ -28,6 +28,7 @@ from .media import (
     create_work_dir,
     embed_chapters,
     extract_audio,
+    has_audio_stream,
     has_video_stream,
     parse_chapters,
 )
@@ -96,8 +97,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="submaster",
         description=(
-            "Create synchronized .srt subtitles from a video file, or batch-process "
-            "every video file in a folder, using whisper.cpp with optional offline "
+            "Create synchronized .srt subtitles from video or plain-text transcripts "
+            "from audio files, or batch-process every video file in a folder, "
+            "using whisper.cpp with optional offline "
             "translation and transcript cleanup via llama.cpp."
         ),
         epilog=(
@@ -114,14 +116,15 @@ def build_parser() -> argparse.ArgumentParser:
     # subtitle location.
     parser.add_argument(
         "input",
-        help="Path to a video file, or a folder to batch-process video files.",
+        help="Path to a video or audio file, or a folder to batch-process video files.",
     )
     parser.add_argument(
         "-o",
         "--output",
         help=(
             "Output .srt file path or directory. Defaults to the input stem next to "
-            "the source file. When input is a folder this must be a directory."
+            "the source file. When input is a folder this must be a directory. "
+            "Ignored for audio input; text files are saved next to the source."
         ),
     )
 
@@ -198,7 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite the destination SRT if it already exists.",
+        help="Overwrite destination subtitle and transcript files if they already exist.",
     )
     parser.add_argument(
         "--recursive",
@@ -208,12 +211,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--keep-audio",
         action="store_true",
-        help="Keep the normalized WAV file next to the generated subtitle.",
+        help="Keep the normalized WAV file next to the generated subtitle or transcript.",
     )
     parser.add_argument(
         "--transcribe",
         action="store_true",
-        help="Also write a plain-text transcription next to the generated subtitle.",
+        help=(
+            "Write a plain-text transcription next to the generated subtitle, or "
+            "next to an audio source. Required to produce output from audio input."
+        ),
     )
     parser.add_argument(
         "--cleanup",
@@ -237,10 +243,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # Translation options stay optional and are only used when the caller
-    # asks for a second-language subtitle file.
+    # asks for subtitles or a transcript in a second language.
     parser.add_argument(
         "--translate",
-        help="Translate the generated subtitles into the given target language code or name.",
+        help="Translate the generated subtitles or audio transcript into the given target language code or name.",
     )
     parser.add_argument(
         "--tmodel",
@@ -542,9 +548,9 @@ def build_transcription_output_paths(input_path: Path, output_path: Path) -> tup
 
 
 def build_translation_output_path(output_path: Path, language_code: str) -> Path:
-    """Build the translated subtitle sidecar path for one target language."""
+    """Build a translated subtitle or transcript sidecar for one target language."""
     normalized_code = language_code.strip().lower() or "translated"
-    return output_path.with_name(f"{output_path.stem}_{normalized_code}.srt")
+    return output_path.with_name(f"{output_path.stem}_{normalized_code}{output_path.suffix}")
 
 
 def resolve_chapters_path(input_path: Path) -> Path | None:
@@ -630,27 +636,39 @@ def process_media_file(
     job_index: int | None = None,
     job_total: int | None = None,
     skip_video_validation: bool = False,
+    audio_only: bool = False,
 ) -> None:
-    """Run the full subtitle pipeline for one media file."""
+    """Run the subtitle or audio transcript pipeline for one media file."""
+    if audio_only:
+        # Audio outputs always stay beside their source, regardless of --output.
+        output_path = input_path
+        if not args.transcribe:
+            console.info("Audio input requires --transcribe to produce output; nothing to do.")
+            return
+
     work_dir: Path | None = None
-    chapters_path = resolve_chapters_path(input_path)
+    chapters_path = resolve_chapters_path(input_path) if not audio_only else None
     transcript_path, cleanup_path = build_transcription_output_paths(input_path, output_path)
     summarize = args.transcribe and args.cleanup and args.summarize
     summary_path = output_path.with_name(f"{input_path.stem}_summary.txt")
     translated_output_path = (
-        build_translation_output_path(output_path, resources.translator.target_language.code)
+        build_translation_output_path(
+            transcript_path if audio_only else output_path,
+            resources.translator.target_language.code,
+        )
         if resources.translator is not None
         else None
     )
 
     try:
-        if output_path.exists() and not args.overwrite:
+        if not audio_only and output_path.exists() and not args.overwrite:
             raise SubmasterError(
                 f"Output file already exists: {output_path}. Use --overwrite to replace it."
             )
         if translated_output_path is not None and translated_output_path.exists() and not args.overwrite:
             raise SubmasterError(
-                f"Translated subtitle file already exists: {translated_output_path}. Use --overwrite to replace it."
+                f"Translated {'transcript' if audio_only else 'subtitle'} file already exists: "
+                f"{translated_output_path}. Use --overwrite to replace it."
             )
         if args.transcribe and transcript_path.exists() and not args.overwrite:
             raise SubmasterError(
@@ -666,22 +684,25 @@ def process_media_file(
             )
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        detail = f"'{input_path.name}' -> '{output_path.name}'"
+        detail = f"'{input_path.name}' -> '{transcript_path.name if audio_only else output_path.name}'"
         if job_index is not None and job_total is not None:
             detail = f"[{job_index}/{job_total}] {detail}"
             console.emphasis(detail)
         else:
             console.line(detail)
 
-        if not skip_video_validation and not has_video_stream(input_path):
-            raise SubmasterError("Input must contain a video stream.")
+        if not skip_video_validation:
+            if audio_only and not has_audio_stream(input_path):
+                raise SubmasterError("Input must contain an audio stream.")
+            if not audio_only and not has_video_stream(input_path):
+                raise SubmasterError("Input must contain a video stream.")
         console.info(build_processing_summary(args, clip_range))
 
         work_dir = create_work_dir()
         # Keep intermediate filenames simple so native runtimes never have to
         # deal with user-facing punctuation or long source names.
         audio_path = work_dir / "input.wav"
-        console.info("Extracting audio track from video.")
+        console.info("Normalizing audio input." if audio_only else "Extracting audio track from video.")
         clip_start_ms = clip_range[0] if clip_range is not None else None
         clip_duration_ms = (
             clip_range[1] - clip_range[0]
@@ -740,9 +761,13 @@ def process_media_file(
             else None
         )
 
-        output_path.write_text(normalized_srt, encoding="utf-8", newline="")
+        if not audio_only:
+            output_path.write_text(normalized_srt, encoding="utf-8", newline="")
         if translated_srt is not None and translated_output_path is not None:
-            translated_output_path.write_text(translated_srt, encoding="utf-8", newline="")
+            translated_text = (
+                render_transcript_from_srt(translated_srt) if audio_only else translated_srt
+            )
+            translated_output_path.write_text(translated_text, encoding="utf-8", newline="")
         if transcript_text is not None:
             transcript_path.write_text(transcript_text, encoding="utf-8", newline="")
         if cleaned_transcript_text is not None:
@@ -757,7 +782,9 @@ def process_media_file(
             console.info(f"Kept normalized audio at {kept_audio}")
 
         if translated_srt is not None and translated_output_path is not None:
-            console.info(f"Translated subtitle written to {translated_output_path}")
+            console.info(
+                f"Translated {'transcript' if audio_only else 'subtitle'} written to {translated_output_path}"
+            )
         if transcript_text is not None:
             console.info(f"Transcription written to {transcript_path}")
         if cleaned_transcript_text is not None:
@@ -771,7 +798,11 @@ def process_media_file(
 
         # A single-file run completes here. Batch items remain informational so
         # the batch summary is the invocation's only success marker.
-        completion_message = f"Subtitle written to {output_path}"
+        completion_message = (
+            f"Transcription written to {transcript_path}"
+            if audio_only
+            else f"Subtitle written to {output_path}"
+        )
         if job_total is None:
             console.success(completion_message)
         else:
@@ -884,9 +915,18 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
-        output_path = resolve_output_path(input_path, args.output).resolve()
-        if not has_video_stream(input_path):
-            raise SubmasterError("Input must contain a video stream.")
+        audio_only = not has_video_stream(input_path)
+        if audio_only and not has_audio_stream(input_path):
+            raise SubmasterError("Input must contain a video or audio stream.")
+        if audio_only:
+            if args.output:
+                console.info("Ignoring --output for audio input; text files are saved next to the source.")
+            if not args.transcribe:
+                console.info("Audio input requires --transcribe to produce output; nothing to do.")
+                return 0
+            output_path = input_path
+        else:
+            output_path = resolve_output_path(input_path, args.output).resolve()
         resources = prepare_processing_resources(args, models_dir, console)
         process_media_file(
             input_path,
@@ -896,6 +936,7 @@ def main(argv: list[str] | None = None) -> int:
             resources,
             clip_range,
             skip_video_validation=True,
+            audio_only=audio_only,
         )
 
         return 0

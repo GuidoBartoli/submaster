@@ -1,9 +1,9 @@
 <p align="center">
   <img src="submaster.png" width="600px" alt="Submaster" />
-  <br><b>An open source tool for video subtitle generation and translation</b>
+  <br><b>An open source tool for video subtitles, audio transcription, and translation</b>
 </p>
 
-**SubMaster** is a command-line Python application that takes a video as input and transcribes spoken dialogues into a synchronized subtitle file with optional translation into another language.
+**SubMaster** is a command-line Python application that transcribes spoken dialogues from video into synchronized subtitles, or from audio into plain-text transcripts, with optional translation into another language.
 
 <p align="center">
 <img width="721" height="166" alt="image" src="https://github.com/user-attachments/assets/f3e6be8f-f59b-4ac2-a940-d78cd33d9040" />
@@ -12,10 +12,11 @@
 ## Features
 
 - Accepts common video formats such as MP4, MKV, MOV, AVI, MPG/MPEG, and RMVB
+- Accepts audio files such as MP3, M4A, WAV, FLAC, OGG, and other formats supported by `ffmpeg`; use `--transcribe` to write text output
 - Batch-processes video files in a folder, with optional recursive subfolder scanning, using a case-insensitive video extension allowlist and stream validation
 - Extracts and normalizes mono WAV audio using `ffmpeg` before transcription
 - Supports `tiny`, `base`, `small`, `medium`, `large`, and `turbo` Whisper models
-- Optionally translates subtitles into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
+- Optionally translates subtitles or audio transcripts into another language with **Tencent HY-MT 1.5** models through `llama.cpp`
 - Optionally polishes `--transcribe` output with a local **Qwen3.8-9B community distillation** cleanup pass through `llama.cpp`
 - Uses **Silero VAD 6.2.0** by default to exclude non-speech audio and reduce hallucinated subtitles
 - Automatically embeds chapter markers from a same-directory `<video-stem>.chp` text file into a chapter-capable copy of the input video
@@ -58,7 +59,7 @@ The runtime setup script:
 3. Clones `whisper.cpp` and `llama.cpp` into the project root and builds them with the correct flags
 4. Verifies the resulting executables — `python -m submaster` picks them up automatically from those locations
 
-Run `python -m submaster` from this project root so it uses the local `models/` cache and the runtimes built by `setup_runtimes.py`. Pass videos or folders by absolute path, `~` path, or a path relative to the project root.
+Run `python -m submaster` from this project root so it uses the local `models/` cache and the runtimes built by `setup_runtimes.py`. Pass video files, audio files, or folders by absolute path, `~` path, or a path relative to the project root.
 
 Install build prerequisites first:
 
@@ -89,13 +90,24 @@ First `cd` to the SubMaster checkout, then run the command from there:
 - Translate the generated subtitles into Italian: `python -m submaster /path/to/input.mp4 --translate it`
 - Generate a plain-text transcription and clean it locally: `python -m submaster /path/to/input.mp4 --transcribe --cleanup`
 - Summarize the cleaned transcription: `python -m submaster /path/to/input.mp4 --transcribe --cleanup --summarize`
+- Transcribe an audio file: `python -m submaster /path/to/recording.mp3 --transcribe`
+- Transcribe, translate, and clean an audio recording: `python -m submaster /path/to/recording.m4a --transcribe --translate it --cleanup`
 - Automatically embed chapter markers: place an `input.chp` file next to `/path/to/input.mp4`, then run the normal transcription command
 
 ### Options
 
-If `--translate` is set, the written `.srt` file keeps the original-language subtitles and an additional `<output-stem>_<language_code>.srt` file is written with the translated subtitles.
+For video input, if `--translate` is set, the written `.srt` file keeps the original-language subtitles and an additional `<output-stem>_<language_code>.srt` file is written with the translated subtitles.
 
 `--transcribe` writes a companion plain-text `<video-stem>_transcript.txt` file next to the subtitle output. Add `--cleanup` to also write `<video-stem>_cleanup.txt` with the cleaned-up transcription. Add `--summarize` alongside both flags to write `<video-stem>_summary.txt` from the cleaned text using the same Qwen model. It has no effect if either prerequisite is missing. Summary files follow the same output-directory and `--overwrite` rules.
+
+For audio input, `--output` / `-o` is ignored and no `.srt` output is saved. `--transcribe` is required: without it, the command reports that there is nothing to do and does not create output or load models. With it, text files are saved beside the source audio:
+
+- `<audio-stem>_transcript.txt`: the original-language transcript
+- `<audio-stem>_transcript_<language_code>.txt`: a translated transcript when `--translate` is set
+- `<audio-stem>_cleanup.txt`: a cleaned copy of the original transcript when `--cleanup` is set
+- `<audio-stem>_summary.txt`: a summary of the cleaned text when both `--cleanup` and `--summarize` are set
+
+Audio inputs retain the same language, model, VAD, `--range`, and `--overwrite` options. `--keep-audio` can retain a `<audio-stem>.normalized.wav` file when `--transcribe` is enabled. Embedded cover art does not turn an audio input into a video. Chapter sidecars apply only to video input, and folder processing continues to select video files only; pass audio files individually.
 
 For each input video, SubMaster automatically looks for a same-directory `<video-stem>.chp` text file. For example, processing `movie.mp4` checks for `movie.chp`. If the file exists, SubMaster reads its chapter timestamps and produces a chapter-embedded copy next to the original. MP4 and other modern chapter-capable containers retain their original extension. Legacy RMVB, AVI, and MPG/MPEG inputs are written as `<video-stem>_chapters.mkv` because their original containers do not reliably support chapters. AVI and MPG/MPEG streams are copied without re-encoding when compatible. RMVB video is converted from RV40 to H.264 and its Cook audio to AAC because copying RV40 into Matroska loses decoder initialization data and produces an unplayable file. The H.264 bitrate is calculated from the source container bitrate, reserving 96 kb/s for AAC audio and a small Matroska overhead allowance so the converted file remains approximately the same size as the source. Other legacy inputs automatically fall back to AAC audio or H.264/AAC conversion only when stream-copy is rejected. If no `.chp` file exists, subtitle creation proceeds normally without chapter embedding. Each non-empty chapter line must follow the format `HH:MM:SS Title`. In folder mode, every video is matched with its own `.chp` sidecar independently.
 
@@ -125,7 +137,7 @@ When the positional input is a folder, SubMaster first filters direct child file
 
 ### Translation Backend
 
-Subtitle translation uses **Tencent HY-MT 1.5 GGUF** models through `llama.cpp`.
+Subtitle and audio transcript translation uses **Tencent HY-MT 1.5 GGUF** models through `llama.cpp`.
 
 Available translation sizes:
 

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "submaster"
-version = "1.1.0"
-description = "Offline subtitle generation from video using whisper.cpp"
+version = "1.2.0"
+description = "Offline video subtitles and audio transcription using whisper.cpp"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }

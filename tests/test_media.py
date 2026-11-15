@@ -11,6 +11,7 @@ from submaster.media import (
     build_chapter_output_path,
     calculate_legacy_video_bitrate,
     extract_audio,
+    has_audio_stream,
     has_video_stream,
     parse_chapters,
     probe_bitrate_bps,
@@ -98,6 +99,40 @@ class ParseChaptersTests(unittest.TestCase):
 
         self.assertTrue(has_video)
         self.assertIn("-show_streams", run_mock.call_args.args[0])
+
+    def test_has_video_stream_ignores_audio_cover_art(self) -> None:
+        """Audio with an attached picture must use transcript output."""
+        result = SimpleNamespace(
+            returncode=0,
+            stdout='{"streams":[{"codec_type":"audio"},{"codec_type":"video",'
+                   '"disposition":{"attached_pic":1}}]}',
+            stderr="",
+        )
+
+        with patch("submaster.media.subprocess.run", return_value=result):
+            self.assertFalse(has_video_stream(Path("/tmp/song.mp3")))
+            self.assertTrue(has_audio_stream(Path("/tmp/song.mp3")))
+
+    def test_has_video_stream_preserves_video_alongside_cover_art(self) -> None:
+        """A real video track still selects subtitles when artwork is also present."""
+        result = SimpleNamespace(
+            returncode=0,
+            stdout='{"streams":[{"codec_type":"video","disposition":{"attached_pic":1}},'
+                   '{"codec_type":"video","disposition":{"attached_pic":0}}]}',
+            stderr="",
+        )
+
+        with patch("submaster.media.subprocess.run", return_value=result):
+            self.assertTrue(has_video_stream(Path("/tmp/movie.mp4")))
+            self.assertFalse(has_audio_stream(Path("/tmp/movie.mp4")))
+
+    def test_has_audio_stream_rejects_empty_streams_and_probe_failures(self) -> None:
+        """Missing audio and unreadable media must not qualify for transcription."""
+        with patch("submaster.media._run_probe", return_value='{"streams":[]}'):
+            self.assertFalse(has_audio_stream(Path("/tmp/empty.wav")))
+        with patch("submaster.media._run_probe", side_effect=SubmasterError("bad media")):
+            with self.assertRaisesRegex(SubmasterError, "bad media"):
+                has_audio_stream(Path("/tmp/broken.wav"))
 
     def test_probe_duration_seconds_returns_none_for_missing_or_invalid_duration(self) -> None:
         """Verify that optional duration metadata degrades to None when unusable."""
