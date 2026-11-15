@@ -182,19 +182,20 @@ class CliTests(unittest.TestCase):
         with self.assertRaisesRegex(SubmasterError, "greater than"):
             resolve_clip_range(["00:01:00", "00:01:00"])
 
-    def test_main_rejects_audio_only_input(self) -> None:
-        """Verify that the CLI rejects media files without a video stream."""
+    def test_main_rejects_input_without_audio_or_video(self) -> None:
+        """Verify that files without a usable media stream are rejected."""
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.wav"
             input_path.write_bytes(b"fake")
 
-            # Stub the external dependency and probe checks so the test can focus
-            # on the video-stream validation branch.
             with patch("submaster.cli.ensure_runtime_dependencies", return_value=None):
                 with patch("submaster.cli.has_video_stream", return_value=False):
-                    exit_code = main([str(input_path)])
+                    with patch("submaster.cli.has_audio_stream", return_value=False):
+                        with patch("submaster.cli.prepare_processing_resources") as prepare:
+                            exit_code = main([str(input_path), "--transcribe"])
 
         self.assertEqual(exit_code, 1)
+        prepare.assert_not_called()
 
     def test_resolve_output_path_accepts_windows_style_directory_separator(self) -> None:
         """Verify that Windows-style trailing separators are treated as directories."""

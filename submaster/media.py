@@ -66,19 +66,31 @@ def _run_probe(input_path: Path, entries: str, target: str) -> str:
 
 
 def has_video_stream(input_path: Path) -> bool:
-    """Check whether a media file contains at least one video stream.
+    """Check whether a media file contains video beyond attached cover art.
 
     :param input_path: Media file to inspect.
     :type input_path: pathlib.Path
-    :returns: `True` when a video stream is present, otherwise `False`.
+    :returns: `True` when a non-cover-art video stream is present, otherwise `False`.
     :rtype: bool
     :raises SubmasterError: If probing the file fails.
     """
-    # Ask ffprobe for stream types only; the CLI just needs to know whether video exists.
-    output = _run_probe(input_path, "stream=codec_type", "-show_streams")
+    output = _run_probe(
+        input_path, "stream=codec_type:stream_disposition=attached_pic", "-show_streams"
+    )
     payload = json.loads(output or "{}")
     streams = payload.get("streams", [])
-    return any(stream.get("codec_type") == "video" for stream in streams)
+    return any(
+        stream.get("codec_type") == "video"
+        and not stream.get("disposition", {}).get("attached_pic", 0)
+        for stream in streams
+    )
+
+
+def has_audio_stream(input_path: Path) -> bool:
+    """Check whether a media file contains at least one audio stream."""
+    output = _run_probe(input_path, "stream=codec_type", "-show_streams")
+    payload = json.loads(output or "{}")
+    return any(stream.get("codec_type") == "audio" for stream in payload.get("streams", []))
 
 
 def probe_duration_seconds(input_path: Path) -> float | None:
